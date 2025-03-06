@@ -23,7 +23,7 @@ class GitHubChecker:
         self.repo_name = repo_name
         self.branch = branch
         self.ignore_files = ignore_files if ignore_files is not None else [".env"]
-        self.ignore_folders = ignore_folders if ignore_folders is not None else ["__pycache__", ".git"]
+        self.ignore_folders = ignore_folders if ignore_folders is not None else ["__pycache__"]
         self._check_state = None  # Stores the check results after running once
         self._has_run = False
         self._load_gitignore()
@@ -74,27 +74,28 @@ class GitHubChecker:
         local_hashes = {}
         file_list = []
 
-        for root, dirs, files in os.walk(self.local_dir):
-            # Prune ignored directories from os.walk's dirs list to prevent traversal
-            dirs[:] = [d for d in dirs if d not in self.ignore_folders]
-            
+        for root, _, files in os.walk(self.local_dir):
             rel_root = os.path.relpath(root, self.local_dir)
-            # Skip processing if any part of the path is ignored
-            components = rel_root.split(os.path.sep)
-            if any(comp in self.ignore_folders for comp in components):
+            # Skip ignored folders
+            if any(folder in root for folder in self.ignore_folders):
                 continue
-
+            # Skip folders matching gitignore patterns
+            if any(self._matches_gitignore(os.path.join(rel_root, '')) for pattern in self.gitignore_patterns):
+                continue
+            
             for file in files:
+                # Skip files in ignore list
                 if file in self.ignore_files:
                     continue
-                rel_path = os.path.join(rel_root, file) if rel_root != '.' else file
+                rel_path = os.path.join(rel_root, file)
+                # Skip files matching gitignore patterns
                 if any(self._matches_gitignore(rel_path) for pattern in self.gitignore_patterns):
                     continue
                 file_list.append(os.path.join(root, file))
 
         with ThreadPoolExecutor() as executor:
             results = executor.map(lambda f: self._hash_file_entry(f), file_list)
-            local_hashes = {k: v for k, v in results if k is not None}
+            local_hashes = dict(results)
 
         return local_hashes
 
@@ -219,15 +220,17 @@ class GitHubChecker:
     def write_line_differences(self):
         """
         Compute the exact line differences for modified files (present in both local and GitHub,
-        but with differing content) and write them to a file named DIFFERENCES_FILE_NAME.
+        but with differing content) and write them to a markdown file named 'all_differences.md'.
         
         The report follows this structure:
         
-            file_relative_path
+            ### file_relative_path
+            ```diff
             +<added line>
             -<removed line>
+            ```
         
-        File paths are relative to the current working directory (i.e. where main.py is run).
+        File paths are relative to the current working directory.
         """
         # Recompute local and GitHub hashes to identify modified files.
         local_hashes = self._get_local_hashes()
@@ -238,7 +241,7 @@ class GitHubChecker:
             if file in github_hashes and local_hashes[file] != github_hashes[file]
         ]
         
-        output_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
+        output_path = os.path.join(os.getcwd(), )
         
         with open(output_path, "w", encoding="utf-8") as outfile:
             if not modified_files:
@@ -269,10 +272,9 @@ class GitHubChecker:
                 # Filter only the lines that indicate additions or removals.
                 diff_filtered = [line for line in diff_lines if line.startswith('+ ') or line.startswith('- ')]
                 
-                # If there are actual differences, write them to the output file
-                if diff_filtered:
-                    # Write the file header and its differences.
-                    outfile.write(f"{rel_path}\n")
-                    for line in diff_filtered:
-                        outfile.write(f"{line}\n")
-                    outfile.write("\n")  # Separate each file's diff with a newline.
+                # Write the file header as a markdown heading and its differences in a diff-styled code block.
+                outfile.write(f"### {rel_path}\n")
+                outfile.write("```diff\n")
+                for line in diff_filtered:
+                    outfile.write(f"{line}\n")
+                outfile.write("```\n\n")

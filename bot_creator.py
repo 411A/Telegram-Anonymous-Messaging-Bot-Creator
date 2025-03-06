@@ -154,7 +154,7 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
             branch='main',
             ignore_folders=['.venv', '__pycache__']
         )
-        checker.write_line_differences()
+        diff_result = checker.write_line_differences()
 
         try:
             GITHUB_CHECK_RESULTS[user_lang] = checker.check_integrity(user_lang=user_lang)
@@ -213,9 +213,20 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Create a media group (album) to send both files in one message
         media_group = [
-            InputMediaDocument(media=file_to_send, filename=running_script_filename),
-            InputMediaDocument(media=diff_file_data, filename=DIFFERENCES_FILE_NAME)
+            InputMediaDocument(media=file_to_send, filename=running_script_filename)
         ]
+        
+        # Only add differences file if there are actual differences
+        if diff_result != "IDENTICAL_FILES":
+            try:
+                diff_file_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
+                with open(diff_file_path, "rb") as diff_file:
+                    diff_file_data = io.BytesIO(diff_file.read())
+                    diff_file_data.name = DIFFERENCES_FILE_NAME
+                media_group.append(InputMediaDocument(media=diff_file_data, filename=DIFFERENCES_FILE_NAME))
+            except Exception as e:
+                logger.error(f"Error reading diff file: {e}")
+                raise ValueError("Failed to prepare diff file data")
 
         # Send media group (both documents together)
         try:

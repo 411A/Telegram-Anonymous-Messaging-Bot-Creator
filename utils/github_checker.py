@@ -242,6 +242,8 @@ class GitHubChecker:
         output_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
         
         with open(output_path, "w", encoding="utf-8") as outfile:
+            if not modified_files:
+                return "IDENTICAL_FILES"
             for file in modified_files:
                 # Compute relative file path from current working directory.
                 local_file_path = os.path.join(self.local_dir, file)

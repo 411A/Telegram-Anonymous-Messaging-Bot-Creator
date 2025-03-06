@@ -1,0 +1,5 @@
+python-dotenv==1.0.1
+fastapi[all]==0.115.11
+python-telegram-bot[all]==21.11.1
+aiosqlite==0.21.0
+requests==2.32.3

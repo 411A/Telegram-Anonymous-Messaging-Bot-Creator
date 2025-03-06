@@ -4,6 +4,7 @@ import requests
 import difflib
 from concurrent.futures import ThreadPoolExecutor
 from responses import get_response, ResponseKey
+from configs.constants import DIFFERENCES_FILE_NAME
 
 class GitHubChecker:
     def __init__(self, repo_owner, repo_name, branch="main", ignore_files=None, ignore_folders=None):
@@ -219,7 +220,7 @@ class GitHubChecker:
     def write_line_differences(self):
         """
         Compute the exact line differences for modified files (present in both local and GitHub,
-        but with differing content) and write them to a file named 'all_differences.txt'.
+        but with differing content) and write them to a file named DIFFERENCES_FILE_NAME.
         
         The report follows this structure:
         
@@ -238,7 +239,7 @@ class GitHubChecker:
             if file in github_hashes and local_hashes[file] != github_hashes[file]
         ]
         
-        output_path = os.path.join(os.getcwd(), "all_differences.txt")
+        output_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
         
         with open(output_path, "w", encoding="utf-8") as outfile:
             for file in modified_files:

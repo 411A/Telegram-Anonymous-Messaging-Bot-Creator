@@ -1,9 +1,10 @@
 import os
 import hashlib
-import requests
 import difflib
-from concurrent.futures import ThreadPoolExecutor
-from responses import get_response, ResponseKey
+import aiofiles
+import aiohttp
+import asyncio
+from .responses import get_response, ResponseKey
 from configs.constants import DIFFERENCES_FILE_NAME
 
 class GitHubChecker:
@@ -16,25 +17,26 @@ class GitHubChecker:
             repo_name (str): GitHub repository name.
             branch (str): Repository branch to check (default "main").
             ignore_files (list): List of filenames to ignore (default [".env"]).
-            ignore_folders (list): List of folder names to ignore (default ["__pycache__"]).
+            ignore_folders (list): List of folder names to ignore (default [".venv", "__pycache__", ".git"]).
         """
         self.local_dir = self._get_running_file_dir()
         self.repo_owner = repo_owner
         self.repo_name = repo_name
         self.branch = branch
         self.ignore_files = ignore_files if ignore_files is not None else [".env"]
-        self.ignore_folders = ignore_folders if ignore_folders is not None else ["__pycache__"]
+        self.ignore_folders = ignore_folders if ignore_folders is not None else [".venv", "__pycache__", ".git"]
         self._check_state = None  # Stores the check results after running once
         self._has_run = False
-        self._load_gitignore()
+        self.gitignore_patterns = list()
+        # Load .gitignore patterns asynchronously (fire and forget)
+        asyncio.create_task(self._load_gitignore())
 
-    def _load_gitignore(self):
+    async def _load_gitignore(self):
         """Load patterns from .gitignore file if it exists."""
         gitignore_path = os.path.join(self.local_dir, ".gitignore")
-        self.gitignore_patterns = []
         if os.path.exists(gitignore_path):
-            with open(gitignore_path, 'r') as f:
-                for line in f:
+            async with aiofiles.open(gitignore_path, 'r') as f:
+                async for line in f:
                     line = line.strip()
                     if line and not line.startswith('#'):
                         # Remove trailing slashes for consistency
@@ -56,54 +58,52 @@ class GitHubChecker:
         # Go up one level to get to the project root
         return os.path.dirname(current_dir)
 
-    def _get_file_hash(self, filepath, algorithm="sha256"):
+    async def _get_file_hash(self, filepath, algorithm="sha256"):
         """Compute the hash of a file."""
         hasher = hashlib.new(algorithm)
-        with open(filepath, "rb") as f:
-            while chunk := f.read(8192):
+        async with aiofiles.open(filepath, "rb") as f:
+            while chunk := await f.read(8192):
                 hasher.update(chunk)
         return hasher.hexdigest()
 
-    def _hash_file_entry(self, filepath):
+    async def _hash_file_entry(self, filepath):
         """Hash a file and return its relative path with its hash."""
         rel_path = os.path.relpath(filepath, self.local_dir)
-        return rel_path, self._get_file_hash(filepath)
+        file_hash = await self._get_file_hash(filepath)
+        return rel_path, file_hash
 
-    def _get_local_hashes(self):
+    async def _get_local_hashes(self):
         """Generate hashes for all local files (ignoring specified files and folders)."""
-        local_hashes = {}
-        file_list = []
+        local_hashes = dict()
+        files_to_hash = list()
 
         for root, _, files in os.walk(self.local_dir):
             rel_root = os.path.relpath(root, self.local_dir)
             # Skip ignored folders
-            if any(folder in root for folder in self.ignore_folders):
+            if any(ignored in root for ignored in self.ignore_folders):
                 continue
             # Skip folders matching gitignore patterns
-            if any(self._matches_gitignore(os.path.join(rel_root, '')) for pattern in self.gitignore_patterns):
+            if self._matches_gitignore(os.path.join(rel_root, '')):
                 continue
-            
+
             for file in files:
                 # Skip files in ignore list
                 if file in self.ignore_files:
                     continue
                 rel_path = os.path.join(rel_root, file)
-                # Skip files matching gitignore patterns
-                if any(self._matches_gitignore(rel_path) for pattern in self.gitignore_patterns):
+                if self._matches_gitignore(rel_path):
                     continue
-                file_list.append(os.path.join(root, file))
+                files_to_hash.append(os.path.join(root, file))
 
-        with ThreadPoolExecutor() as executor:
-            results = executor.map(lambda f: self._hash_file_entry(f), file_list)
-            local_hashes = dict(results)
-
+        tasks = [self._hash_file_entry(f) for f in files_to_hash]
+        results = await asyncio.gather(*tasks)
+        local_hashes = dict(results)
         return local_hashes
 
     def _matches_gitignore(self, path):
         """Check if a path matches any gitignore pattern."""
         from fnmatch import fnmatch
         path = path.replace('\\', '/')
-        
         for pattern in self.gitignore_patterns:
             if pattern.endswith('/'):
                 # Directory pattern
@@ -115,7 +115,7 @@ class GitHubChecker:
                     return True
         return False
 
-    def _fetch_and_hash_github_file(self, item):
+    async def _fetch_and_hash_github_file(self, item, session):
         """Fetch a file from GitHub and compute its hash.
         
         Skip files that are in the ignore list.
@@ -125,31 +125,31 @@ class GitHubChecker:
             return None
 
         file_url = f"https://raw.githubusercontent.com/{self.repo_owner}/{self.repo_name}/{self.branch}/{item['path']}"
-        response = requests.get(file_url)
-        response.raise_for_status()
-        file_hash = hashlib.sha256(response.content).hexdigest()
+        async with session.get(file_url) as response:
+            if response.status != 200:
+                raise Exception(f"Failed to fetch {file_url}: Status {response.status}")
+            content = await response.read()
+            file_hash = hashlib.sha256(content).hexdigest()
         return item["path"], file_hash
 
-    def _get_github_hashes(self):
+    async def _get_github_hashes(self):
         """Fetch all GitHub file hashes (ignoring specified files)."""
-        github_hashes = {}
+        github_hashes = dict()
         url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/git/trees/{self.branch}?recursive=1"
         headers = {"Accept": "application/vnd.github.v3+json"}
 
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            raise Exception(f"GitHub API error: {response.status_code}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    raise Exception(f"GitHub API error: {response.status}")
+                repo_data = await response.json()
 
-        repo_data = response.json()
-        # Only consider files (blobs) and filter out ignored files
-        blob_items = [
-            item for item in repo_data.get("tree", []) 
-            if item["type"] == "blob" and os.path.basename(item["path"]) not in self.ignore_files
-        ]
-
-        with ThreadPoolExecutor() as executor:
-            # Map returns None for ignored files, so we filter those out.
-            results = list(executor.map(lambda item: self._fetch_and_hash_github_file(item), blob_items))
+            blob_items = [
+                item for item in repo_data.get("tree", [])
+                if item["type"] == "blob" and os.path.basename(item["path"]) not in self.ignore_files
+            ]
+            tasks = [self._fetch_and_hash_github_file(item, session) for item in blob_items]
+            results = await asyncio.gather(*tasks)
             for result in results:
                 if result is not None:
                     path, file_hash = result
@@ -157,9 +157,8 @@ class GitHubChecker:
 
         return github_hashes
 
-    def check_integrity(self, user_lang):
-        """
-        Compare local source code with GitHub repository.
+    async def check_integrity(self, user_lang):
+        """Compare local source code with GitHub repository.
         This method runs only once; subsequent calls return the stored check-state.
 
         Args:
@@ -171,11 +170,11 @@ class GitHubChecker:
         if self._has_run:
             return self._check_state
 
-        responses = []
+        responses = list()
 
         msg = get_response(ResponseKey.FETCHING_LOCAL_FILES, user_lang)
         print(msg)
-        local_hashes = self._get_local_hashes()
+        local_hashes = await self._get_local_hashes()
 
         msg = get_response(ResponseKey.LOCAL_FILES_HASHED, user_lang).format(len(local_hashes))
         print(msg)
@@ -183,7 +182,7 @@ class GitHubChecker:
 
         msg = get_response(ResponseKey.FETCHING_GITHUB_FILES, user_lang)
         print(msg)
-        github_hashes = self._get_github_hashes()
+        github_hashes = await self._get_github_hashes()
 
         msg = get_response(ResponseKey.GITHUB_FILES_HASHED, user_lang).format(len(github_hashes))
         print(msg)
@@ -206,7 +205,6 @@ class GitHubChecker:
                     msg = get_response(ResponseKey.MODIFIED_FILE, user_lang).format(file)
                     print(msg)
                     responses.append(msg)
-
             for file in github_hashes:
                 if file not in local_hashes:
                     msg = get_response(ResponseKey.MISSING_FILE, user_lang).format(file)
@@ -217,64 +215,64 @@ class GitHubChecker:
         self._has_run = True
         return responses
 
-    def write_line_differences(self):
+    async def write_line_differences(self):
         """
         Compute the exact line differences for modified files (present in both local and GitHub,
-        but with differing content) and write them to a markdown file named 'all_differences.md'.
+        but with differing content) and write them to a file named DIFFERENCES_FILE_NAME.
         
         The report follows this structure:
         
-            ### file_relative_path
-            ```diff
+            file_relative_path
             +<added line>
             -<removed line>
-            ```
         
         File paths are relative to the current working directory.
         """
         # Recompute local and GitHub hashes to identify modified files.
-        local_hashes = self._get_local_hashes()
-        github_hashes = self._get_github_hashes()
-        
+        local_hashes = await self._get_local_hashes()
+        github_hashes = await self._get_github_hashes()
+
         modified_files = [
             file for file in local_hashes
             if file in github_hashes and local_hashes[file] != github_hashes[file]
         ]
-        
-        output_path = os.path.join(os.getcwd(), )
-        
-        with open(output_path, "w", encoding="utf-8") as outfile:
+
+        output_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        async with aiofiles.open(output_path, "w", encoding="utf-8") as outfile:
             if not modified_files:
                 return "IDENTICAL_FILES"
             for file in modified_files:
                 # Compute relative file path from current working directory.
                 local_file_path = os.path.join(self.local_dir, file)
                 rel_path = os.path.relpath(local_file_path, os.getcwd())
-                
-                # Read local file content.
+
                 try:
-                    with open(local_file_path, "r", encoding="utf-8") as f:
-                        local_content = f.read().splitlines()
+                    async with aiofiles.open(local_file_path, "r", encoding="utf-8") as f:
+                        local_content = (await f.read()).splitlines()
                 except Exception:
-                    local_content = []
-                
-                # Fetch GitHub file content.
+                    local_content = list()
+
                 file_url = f"https://raw.githubusercontent.com/{self.repo_owner}/{self.repo_name}/{self.branch}/{file}"
+                github_content = list()
                 try:
-                    response = requests.get(file_url)
-                    response.raise_for_status()
-                    github_content = response.text.splitlines()
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(file_url) as response:
+                            if response.status == 200:
+                                text = await response.text()
+                                github_content = text.splitlines()
                 except Exception:
-                    github_content = []
-                
-                # Generate diff using difflib.ndiff.
+                    github_content = list()
+
                 diff_lines = list(difflib.ndiff(github_content, local_content))
                 # Filter only the lines that indicate additions or removals.
                 diff_filtered = [line for line in diff_lines if line.startswith('+ ') or line.startswith('- ')]
-                
-                # Write the file header as a markdown heading and its differences in a diff-styled code block.
-                outfile.write(f"### {rel_path}\n")
-                outfile.write("```diff\n")
-                for line in diff_filtered:
-                    outfile.write(f"{line}\n")
-                outfile.write("```\n\n")
+
+                if diff_filtered:
+                    # Write the file header and its differences.
+                    await outfile.write(f"### {rel_path}\n")
+                    await outfile.write("```diff\n")
+                    for line in diff_filtered:
+                        await outfile.write(f"{line}\n")
+                    await outfile.write("```\n")

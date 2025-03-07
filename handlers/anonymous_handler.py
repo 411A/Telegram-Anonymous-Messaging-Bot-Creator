@@ -4,7 +4,7 @@ from telegram import Message, InlineKeyboardButton, InlineKeyboardMarkup, Reacti
 from telegram.constants import ParseMode
 from utils.responses import get_response, ResponseKey
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
-from utils.other_utils import check_language_availability
+from utils.other_utils import generate_anonymous_id, check_language_availability, AdminsReplyCache
 from configs.constants import (
     SEP,
     CBD_ANON_NO_HISTORY,
@@ -26,41 +26,28 @@ from configs.constants import (
 import time
 import logging
 import asyncio
-import base64
-import hashlib
-import random
-import string
 
 logger = logging.getLogger(__name__)
 
+# Initialize the AdminsReplyCache singleton
+admins_reply_cache = AdminsReplyCache()
+
 #region Helpers
-def generate_anonymous_id(user_id: int, user_fname: str = None, with_history: bool = False) -> str:
-    '''Generate a unique, hashtag-friendly anonymous ID.'''
-    seed = f"{user_id}{user_fname}"
-    if not with_history:
-        seed = f"{seed}_{int(time.time())}_{random.randint(1000, 9999)}"
-
-    # Generate a SHA-256 hash
-    hash_obj = hashlib.sha256(seed.encode()).digest()
-
-    # Encode using base64, ensuring URL-safe and alphanumeric characters
-    encoded = base64.urlsafe_b64encode(hash_obj).decode()
-
-    # Remove non-alphanumeric characters and ensure length
-    anon_id = ''.join(filter(str.isalnum, encoded))[:10]
-
-    # Ensure the first character is a letter
-    if not anon_id[0].isalpha():
-        anon_id = random.choice(string.ascii_letters) + anon_id[1:]
-
-    if with_history:
-        return f"#{anon_id}"
-    return f"{anon_id}"
-
 
 def generate_inline_buttons_anonymous(user_lang: str) -> InlineKeyboardMarkup:
     '''
-    Generates the InlineKeyboardMarkup for the anonymous message.
+    Generate the inline keyboard markup for anonymous message options.
+    
+    Creates a keyboard with three buttons:
+    1. Send anonymously without history
+    2. Send anonymously with history tracking
+    3. Forward message with sender name
+    
+    Args:
+        user_lang (str): The language code for button text localization
+        
+    Returns:
+        InlineKeyboardMarkup: The configured keyboard markup with anonymous sending options
     '''
     keyboard = [
         [InlineKeyboardButton(get_response(ResponseKey.ANONYMOUS_INLINEBUTTON1, user_lang), callback_data=CBD_ANON_NO_HISTORY)],
@@ -69,42 +56,143 @@ def generate_inline_buttons_anonymous(user_lang: str) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(keyboard)
 
+#endregion Helpers
 
 #region Admin
+async def handle_admin_answer(query: CallbackQuery, admin_id: int, sender_user_id: int, original_message_id: int, context: ContextTypes.DEFAULT_TYPE):
+    '''
+    Handle the admin's answer option for an anonymous message.
+    
+    Sets up the reply context and initiates a timeout for the admin's response. Creates a cancel button
+    for the admin to manually cancel their reply attempt, and stores the reply state in cache.
+    
+    Args:
+        query (CallbackQuery): The callback query from the admin's button press
+        admin_id (int): The ID of the admin handling the reply
+        sender_user_id (int): The ID of the original message sender
+        original_message_id (int): The ID of the original message being replied to
+        context (ContextTypes.DEFAULT_TYPE): The context object for the bot
+    
+    Raises:
+        Exception: If there's an error in handling the admin answer process
+    '''
+    user_lang = check_language_availability(query.from_user.language_code)
+    admin_id = int(admin_id)
+    try: 
+        # Create cancel button keyboard and inform admin
+        cancel_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(get_response(ResponseKey.ADMIN_BUTTON_CANCEL_MANUALLY, user_lang), callback_data=CBD_ADMIN_CANCEL_ANSWER)]
+        ])
+        # Inform the admin to reply within a specific timeout
+        wait_msg = await query.message.reply_to_message.reply_text(
+            text=get_response(ResponseKey.ADMIN_REPLY_WAIT, user_lang, minutes=round(ADMIN_REPLY_TIMEOUT / 60)),
+            quote=True,
+            parse_mode=ParseMode.HTML,
+            reply_markup=cancel_keyboard
+        )
+        
+        # Store the reply state in the cache
+        await admins_reply_cache.set(admin_id, {
+            'target_user_id': sender_user_id,
+            'original_message_id': original_message_id,
+            'chat_id': query.message.chat_id,
+            'wait_msg': wait_msg
+        })
+
+        # Start a timeout task for cleaning up state after ADMIN_REPLY_TIMEOUT
+        asyncio.create_task(reply_timeout_handler(query, admin_id, context))
+        # Optionally notify that the admin action is being processed
+        await query.answer(get_response(ResponseKey.ADMIN_REPLY_AWAITING, user_lang), show_alert=False)
+    except Exception as e:
+        logger.exception(f"Error handling admin answer option:\n{e}")
+        await query.answer(get_response(ResponseKey.ADMIN_REPLY_ERROR, user_lang), show_alert=True)
+
+
+async def reply_timeout_handler(query: CallbackQuery, admin_id: int, context: ContextTypes.DEFAULT_TYPE, timeout=ADMIN_REPLY_TIMEOUT):
+    '''
+    Handle the timeout for admin replies by cleaning up the waiting state.
+    
+    After the specified timeout period, checks if the admin has responded. If not, updates the wait
+    message and removes the reply state from cache.
+    
+    Args:
+        query (CallbackQuery): The original callback query that initiated the reply
+        admin_id (int): The ID of the admin whose reply is being timed out
+        context (ContextTypes.DEFAULT_TYPE): The context object for the bot
+        timeout (int, optional): The timeout duration in seconds. Defaults to ADMIN_REPLY_TIMEOUT
+    '''
+    await asyncio.sleep(timeout)
+    user_lang = check_language_availability(query.from_user.language_code)
+    # Check if the waiting state still exists (i.e. admin did not reply)
+    if await admins_reply_cache.exists(admin_id):
+        state = await admins_reply_cache.get(admin_id)
+        wait_msg: Message | None = state.get('wait_msg') if state else None
+        if wait_msg:
+            try:
+                await wait_msg.edit_text(
+                    text=get_response(ResponseKey.ADMIN_REPLY_TIMEOUT, user_lang),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+        # Remove the state from cache
+        await admins_reply_cache.remove(admin_id)
+
+
 async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    '''Handle callback queries for admin options (block/answer) efficiently.'''
+    '''
+    Process callback queries for admin control options (block/answer).
+    
+    Handles the initial processing of admin callback queries, decrypts the callback data,
+    and routes to appropriate handlers for specific actions. Manages admin reply states
+    and prevents concurrent reply operations.
+    
+    Args:
+        update (Update): The update object containing the callback query
+        context (ContextTypes.DEFAULT_TYPE): The context object for the bot
+    
+    Returns:
+        None
+    
+    Note:
+        Expects callback data in format: operation SEP prefix SEP suffix
+        For admin callbacks, the decrypted data format is:
+        option SEP admin_id SEP sender_user_id SEP original_message_id SEP timestamp
+    '''
     query = update.callback_query
     if query is None:
         return
-
+    
     query_data = query.data
     user_lang = check_language_availability(query.from_user.language_code)
+    admin_id = int(query.from_user.id)
 
     # Handle cancel reply button click
     if query_data == CBD_ADMIN_CANCEL_ANSWER:
-        if 'waiting_reply_for' not in context.user_data:
-            await query.answer(get_response(ResponseKey.ADMIN_NO_ONGOING_REPLY, user_lang))
+        # Check if admin has an ongoing reply operation
+        if await admins_reply_cache.exists(admin_id):
+            # Update the wait message text
+            await query.message.edit_text(get_response(ResponseKey.ADMIN_CANCELED_REPLY_MANUALLY, user_lang))
+            # Clean up the reply state from cache
+            await admins_reply_cache.remove(admin_id)
             return
-
-        # Update the wait message text
-        await query.message.edit_text(get_response(ResponseKey.ADMIN_CANCELED_REPLY_MANUALLY, user_lang))
-
-        # Clean up the context data
-        for key in ['waiting_reply_for', 'original_message_id', 'chat_id']:
-            context.user_data.pop(key, None)
-        return
-
-    # Check if there's an ongoing answer operation when trying to start a new one
-    if query_data == CBD_ADMIN_ANSWER and 'waiting_reply_for' in context.user_data:
-        await query.answer(get_response(ResponseKey.ADMIN_ONGOING_REPLY, user_lang), show_alert=True)
-        return
-
 
     try:
         # Expecting data in format: operation SEP prefix SEP suffix
         operation, prefix, suffix = query_data.split(SEP)
+    except Exception as e:
+        logger.exception(f"Can't extract prefix and suffix:\n{e}", exc_info=True)
+        return
 
-        db_manager = DatabaseManager()  # Ensure this manager uses connection pooling/WAL if needed
+    # Check if there's an ongoing answer operation when trying to start a new one
+    if operation == CBD_ADMIN_ANSWER:
+        if await admins_reply_cache.exists(admin_id):
+            await query.answer(get_response(ResponseKey.ADMIN_ONGOING_REPLY, user_lang), show_alert=True)
+            return
+
+    try:
+
+        db_manager = DatabaseManager()
         full_encrypted_hash = await db_manager.get_full_hash_by_prefix(prefix, suffix, 'messages')
         encryptor = Encryptor()
 
@@ -112,6 +200,10 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             raw_admin_callback = encryptor.decrypt(full_encrypted_hash)
             # Expecting raw_admin_callback in format: option SEP admin_id SEP sender_user_id SEP original_message_id SEP timestamp
             option, admin_id, sender_user_id, original_message_id, timestamp = raw_admin_callback.split(SEP)
+            # Convert IDs to integers
+            admin_id = int(admin_id)
+            sender_user_id = int(sender_user_id)
+            original_message_id = int(original_message_id)
         except Exception as decrypt_error:
             await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
             logger.exception(f"Error: Invalid message data:\n{decrypt_error}")
@@ -123,76 +215,31 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         elif operation == CBD_ADMIN_BLOCK:
             asyncio.create_task(handle_admin_block(query, admin_id, context))
         else:
+            logger.error(f"Unknown operation: {operation}")
             await query.answer(get_response(ResponseKey.ADMIN_UNKNOWN_OPERATION, user_lang), show_alert=True)
 
     except Exception as db_error:
         logger.exception(f"Database or processing error in callback:\n{db_error}")
         await query.answer(get_response(ResponseKey.ADMIN_DATABASE_ERROR, user_lang), show_alert=True)
 
-
-async def handle_admin_answer(query: CallbackQuery, admin_id, sender_user_id, original_message_id, context: ContextTypes.DEFAULT_TYPE):
+async def handle_admin_block(query: CallbackQuery, admin_id: int, context: ContextTypes.DEFAULT_TYPE):
     '''
-    Handle the answer option.
-    Here you may set up user context data and schedule a reply timeout.
+    Process the admin's block/unblock action for a user.
+    
+    Toggles the block status of a user and updates the message UI accordingly.
+    Handles both blocking and unblocking operations, updating the message text
+    and keyboard buttons to reflect the current state.
+    
+    Args:
+        query (CallbackQuery): The callback query from the admin's block/unblock action
+        admin_id (int): The ID of the admin performing the action
+        context (ContextTypes.DEFAULT_TYPE): The context object for the bot
+    
+    Raises:
+        Exception: If there's an error in the blocking/unblocking process
     '''
-    # Get user language
-    user_lang = query.from_user.language_code or 'en'
-    try:
-        # Save state in context.user_data for this admin
-        context.user_data['waiting_reply_for'] = sender_user_id
-        context.user_data['original_message_id'] = original_message_id
-        context.user_data['chat_id'] = query.message.chat_id
-
-        # Create cancel button keyboard
-        cancel_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(get_response(ResponseKey.ADMIN_BUTTON_CANCEL_MANUALLY, user_lang), callback_data="CancelReplyAnswer")]
-        ])
-
-        # Inform the admin to reply within a specific timeout
-        wait_msg = await query.message.reply_to_message.reply_text(
-            text=get_response(ResponseKey.ADMIN_REPLY_WAIT, user_lang, minutes=round(ADMIN_REPLY_TIMEOUT / 60)),
-            reply_markup=cancel_keyboard,
-            quote=True,
-            parse_mode=ParseMode.HTML
-        )
-        context.user_data['wait_msg'] = wait_msg
-
-        # Start a timeout task for cleaning up state after ADMIN_REPLY_TIMEOUT seconds
-        asyncio.create_task(reply_timeout_handler(query, context, timeout=ADMIN_REPLY_TIMEOUT))
-        # Optionally notify that the admin action is being processed
-        await query.answer(get_response(ResponseKey.ADMIN_REPLY_AWAITING, user_lang), show_alert=False)
-    except Exception as e:
-        logger.exception(f"Error handling admin answer option:\n{e}")
-        await query.answer(get_response(ResponseKey.ADMIN_REPLY_ERROR, user_lang), show_alert=True)
-
-
-async def reply_timeout_handler(query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE, timeout=ADMIN_REPLY_TIMEOUT):
-    '''Cleanup waiting reply state after a timeout.'''
-    await asyncio.sleep(timeout)
-    user_lang = query.from_user.language_code or 'en'
-    # Check if the waiting state still exists (i.e. admin did not reply)
-    if 'waiting_reply_for' in context.user_data:
-        # Cleanup user state
-        context.user_data.pop('waiting_reply_for', None)
-        context.user_data.pop('original_message_id', None)
-        context.user_data.pop('chat_id', None)
-        wait_msg = context.user_data.pop('wait_msg', None)
-        if wait_msg:
-            try:
-                await wait_msg.delete()
-            except Exception:
-                pass
-        # Inform the admin about the timeout
-        await query.message.reply_to_message.reply_text(
-            text=get_response(ResponseKey.ADMIN_REPLY_TIMEOUT, user_lang),
-            quote=True,
-            parse_mode=ParseMode.HTML
-        )
-
-
-async def handle_admin_block(query: CallbackQuery, admin_id, context: ContextTypes.DEFAULT_TYPE):
-    '''Handle the block option.'''
-    user_lang = query.from_user.language_code or 'en'
+    user_lang = check_language_availability(query.from_user.language_code)
+    admin_id = int(admin_id)
     try:
         # Get the bot username
         bot_username = context.bot.username
@@ -217,7 +264,6 @@ async def handle_admin_block(query: CallbackQuery, admin_id, context: ContextTyp
             raw_admin_callback = keyboard[0][0].callback_data
             answer_callback_data = keyboard[0][1].callback_data
 
-        
         if not raw_admin_callback:
             await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
             return
@@ -233,7 +279,7 @@ async def handle_admin_block(query: CallbackQuery, admin_id, context: ContextTyp
         
         # Convert sender_user_id to integer
         sender_user_id = int(sender_user_id)
-        
+
         # Check if user is already blocked
         is_blocked = await db_manager.is_user_blocked(sender_user_id, bot_username)
         
@@ -270,6 +316,8 @@ async def handle_admin_block(query: CallbackQuery, admin_id, context: ContextTyp
                 # Add #BLOCKED to message
                 if "#BLOCKED" not in message_text:
                     updated_text = message_text.replace("🎛️ Admin controls:", "#BLOCKED\n🎛️ Admin controls:")
+                else:
+                    updated_text = message_text.replace("🎛️ Admin controls:")
 
                 # Update keyboard buttons
                 new_keyboard = [
@@ -293,15 +341,27 @@ async def handle_admin_block(query: CallbackQuery, admin_id, context: ContextTyp
     except Exception as e:
         logger.exception(f"Error handling admin block option\n{e}")
         await query.answer(get_response(ResponseKey.ADMIN_BLOCK_PROCESS_ERROR, user_lang), show_alert=True)
+#endregion Admin
 
 #region Messages
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    '''Handle incoming messages for the created bot, implementing admin and anonymous message routing.'''
-    logger.debug(f"Received message from user {update.message.from_user.id}")
+    '''
+    Process incoming messages and route them based on sender type (admin/user).
+    
+    For admin messages, handles ongoing reply operations. For user messages,
+    processes them according to user's block status and provides anonymous
+    sending options.
+    
+    Args:
+        update (Update): The update object containing the message
+        context (ContextTypes.DEFAULT_TYPE): The context object for the bot
+    
+    Returns:
+        None
+    '''
     db_manager = DatabaseManager()
     # Get user language code
     user_lang = check_language_availability(update.message.from_user.language_code)
-    
     # Get bot's username
     bot_username = context.bot.username
     # Get admin manager singleton instance
@@ -312,28 +372,28 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not user_id:
         return
     
+    
     #* Handle admin message
-    # Check if sender is admin using admin_manager's method first
+    # Check if sender is admin
     is_admin = await admin_manager.is_admin(user_id, bot_username)
     
     if is_admin:
-        # Check if admin is replying to a message and has proper context
-        if 'waiting_reply_for' in context.user_data:
+        # Check if admin has an active reply context in the cache
+        admin_reply_state = await admins_reply_cache.get(user_id)
+        
+        if admin_reply_state:
             # Route to admin message handler
             try:
-                if 'waiting_reply_for' not in context.user_data:
-                    await update.message.reply_text(get_response(ResponseKey.ADMIN_MUST_USE_ANSWER_BUTTON, user_lang), parse_mode=ParseMode.HTML)
-                    return
-
-                target_user_id = context.user_data['waiting_reply_for']
-                original_message_id = context.user_data['original_message_id']
-
+                target_user_id = admin_reply_state.get('target_user_id')
+                original_message_id = admin_reply_state.get('original_message_id')
+                                
                 # 1. Get sender's id
                 sender_user_id = update.message.from_user.id
                 # 2. Get message_id
                 message_id = update.message.id
                 # 3. Get Unix timestamp with nanoseconds
                 timestamp_ns = time.time_ns()
+                                
                 # Construct the callback string for read callback
                 raw_read_callback = f"{sender_user_id}{SEP}{message_id}{SEP}{timestamp_ns}"
                 # 4. Encrypt the callback string
@@ -352,35 +412,60 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 ]
                 user_markup = InlineKeyboardMarkup(user_keyboard)
 
-                # Send the admin's reply to the target user
-                await update.message.copy(
-                    chat_id=target_user_id,
-                    reply_to_message_id=original_message_id,
-                    reply_markup=user_markup
-                )
-                await update.message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_SENT, user_lang), quote=True, parse_mode=ParseMode.HTML)
+                try:
+                    # Ensure target_user_id is an integer
+                    target_user_id = int(target_user_id) if target_user_id else None
+                    original_message_id = int(original_message_id) if original_message_id else None
+                    
+                    if not target_user_id or not original_message_id:
+                        raise ValueError("Invalid target_user_id or original_message_id")
+                    
+                    # Send the admin's reply to the target user
+                    await update.message.copy(
+                        chat_id=target_user_id,
+                        reply_to_message_id=original_message_id,
+                        reply_markup=user_markup
+                    )
 
-                # Store the encrypted message hash using DatabaseManager
-                db_manager = DatabaseManager()
-                await db_manager.store_partial_hash(read_button_prefix, read_stored_hash, 'reads')
+                    # Handle the wait message
+                    wait_msg: Message | None = admin_reply_state.get('wait_msg')
+                    if wait_msg:
+                        try:
+                            # Get the original message the wait_msg was replying to
+                            original_msg = wait_msg.reply_to_message
+                            if original_msg:
+                                # Send new message as reply to original
+                                await original_msg.reply_text(
+                                    text=get_response(ResponseKey.ADMIN_REPLY_SENT, user_lang),
+                                    parse_mode=ParseMode.HTML,
+                                    quote=True
+                                )
+                            # Delete the wait message
+                            await wait_msg.delete()
+                        except Exception as e:
+                            logger.error(f"Failed to handle wait message: {e}")
+                            pass
 
-                # Delete the wait message
-                wait_msg: Message = context.user_data.get('wait_msg')
-                if wait_msg:
-                    try:
-                        await wait_msg.delete()
-                    except Exception:
-                        # Ignore deletion errors
-                        pass
-            except Exception:
+                    # Clean up the reply state from cache
+                    await admins_reply_cache.remove(user_id)
+
+                    # Store the encrypted message hash
+                    db_manager = DatabaseManager()
+                    await db_manager.store_partial_hash(read_button_prefix, read_stored_hash, 'reads')
+                    
+                except Exception as e:
+                    logger.error(f"Failed to send admin reply: {str(e)}\nStack trace:", exc_info=True)
+                    await update.message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), quote=True, parse_mode=ParseMode.HTML)
+                    # Clean up the reply state from cache on error
+                    await admins_reply_cache.remove(user_id)
+            except Exception as e:
+                logger.error(f"Error in admin reply handler: {str(e)}\nStack trace:", exc_info=True)
                 await update.message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), quote=True, parse_mode=ParseMode.HTML)
-            finally:
-                # Cleanup all temporary state
-                for key in ['waiting_reply_for', 'original_message_id', 'chat_id', 'wait_msg']:
-                    context.user_data.pop(key, None)
+                # Clean up the reply state from cache on error
+                await admins_reply_cache.remove(user_id)
         else:
             # Inform admin to use the Answer button
-            await update.message.reply_text(get_response(ResponseKey.CANT_SEND_TO_SELF, user_lang), parse_mode=ParseMode.HTML)
+            await update.message.reply_text(get_response(ResponseKey.ADMIN_MUST_USE_ANSWER_BUTTON, user_lang), parse_mode=ParseMode.HTML)
         return
 
     # Check if user is blocked
@@ -396,13 +481,30 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         reply_to_message_id=update.message.message_id,
         parse_mode=ParseMode.HTML
     )
+#endregion Messages
 
 #region Anon CB
 async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    '''Handle callback queries for anonymous message sending options.'''
+    '''
+    Process callback queries for anonymous message sending options.
+    
+    Handles three types of anonymous sending:
+    1. No history - Send message without tracking sender
+    2. With history - Send message with anonymous ID for history tracking
+    3. Forward - Forward message with sender's name
+    
+    Implements message encryption, admin control button generation, and
+    appropriate message routing based on the selected anonymity option.
+    
+    Args:
+        update (Update): The update object containing the callback query
+        context (ContextTypes.DEFAULT_TYPE): The context object for the bot
+    
+    Returns:
+        None
+    '''
 
     query = update.callback_query
-    # Rest of the existing callback handling code
     query_data = query.data
     user_lang = check_language_availability(query.from_user.language_code)
     
@@ -444,7 +546,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     answer_callback = f"{CBD_ADMIN_ANSWER}{SEP}{admin_button_prefix}{SEP}{admin_button_suffix}"
     #print("Answer callback length:", len(answer_callback.encode('utf-8')))
     
-    # Store the encrypted message hash using DatabaseManager
+    # Store the encrypted message hash
     db_manager = DatabaseManager()
     # Store the year and month the message sent
     year_month = time.strftime("%Y-%m")
@@ -553,10 +655,30 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
         await query.message.edit_text(
             text=get_response(ResponseKey.ERROR_SENDING, user_lang)
         )
+#endregion Anon CB
 
 #region Read CB
 async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    '''Handle read callback for messages, marking them as read with a reaction.'''
+    '''
+    Process read callbacks for messages and mark them as read.
+    
+    Handles the message read status by:
+    1. Removing the read button from the message
+    2. Decrypting the message details
+    3. Sending a read reaction to the original message
+    4. Cleaning up the read status data
+    
+    Args:
+        update (Update): The update object containing the callback query
+        context (ContextTypes.DEFAULT_TYPE): The context object for the bot
+    
+    Returns:
+        None
+    
+    Note:
+        Uses encrypted message data to maintain sender privacy while
+        enabling read status functionality.
+    '''
     try:
         query = update.callback_query
         query_data = query.data
@@ -606,3 +728,4 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     except Exception as e:
         logger.exception(e)
+#endregion Read CB

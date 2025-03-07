@@ -3,9 +3,9 @@ from zoneinfo import ZoneInfo
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from typing import Dict
-from configs.constants import LOGGER_STREAM_LEVEL, LOGGER_FILE_LEVEL
 from dotenv import load_dotenv
 import os
+from configs.constants import LOGGER_STREAM_LEVEL, LOGGER_FILE_LEVEL
 
 load_dotenv(override=True)
 

@@ -4,7 +4,7 @@ __pycache__/
 .env
 config.secure
 all_differences.md
-*.log
+*.log*
 *.db
 *.db-wal
 *.db-shm

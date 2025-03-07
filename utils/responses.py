@@ -54,12 +54,12 @@ class ResponseKey(Enum):
     )
     WELCOME = Response(
         en=("Welcome!\n"
-            "Please send your bot token to create a new bot.\n"
+            "Please send your bot token to create a new anonymous messaging bot.\n"
             "Use the format:\n/register BOT_TOKEN\n"
             "❗ Note: The person who provides the bot token will become the bot's admin. Do not share your token with anyone.\n"
             "To disable your bot, reply to the pinned message with /revoke."),
         fa=("خوش آمدید!\n"
-            "لطفاً توکن ربات خود را برای ایجاد یک ربات جدید ارسال کنید.\n"
+            "لطفاً توکن ربات خود را برای ایجاد یک ربات پیام ناشناس جدید ارسال کنید.\n"
             "فرمت دستور:\n/register BOT_TOKEN\n"
             "❗ توجه: هرکسی که توکن ربات را ارائه دهد، به عنوان مدیر آن ربات در نظر گرفته می‌شود. توکن خود را با هیچ‌کس به اشتراک نگذارید.\n"
             "برای غیرفعال‌سازی ربات، به پیام پین‌شده ریپلای کرده و /revoke را ارسال کنید.")
@@ -177,8 +177,8 @@ class ResponseKey(Enum):
         fa="❌ پاسخ توسط شما لغو شد."
     )
     ADMIN_REPLY_WAIT = Response(
-        en="⏳ Send your reply message within {minutes} seconds...",
-        fa="⏳ پاسخ خود را ظرف {minutes} ثانیه ارسال کنید..."
+        en="⏳ Send your reply message within {minutes} minutes...",
+        fa="⏳ پاسخ خود را ظرف {minutes} دقیقه ارسال کنید..."
     )
     ADMIN_REPLY_AWAITING = Response(
         en="Awaiting your reply...",
@@ -228,6 +228,67 @@ class ResponseKey(Enum):
         en="🤖 Secure & anonymous messaging bot created by @{BOT_CREATOR_USERNAME}",
         fa="🤖 ربات پیام‌رسان امن و ناشناس ایجاد شده توسط @{BOT_CREATOR_USERNAME}"
     )
+    MAIN_BOT_COMMANDS = Response(
+        en=[
+            {
+                'command': 'start',
+                'description': '🔰 Guide'
+            },
+            {
+                'command': 'register',
+                'description': '🔮 Register a new bot'
+            },
+            {
+                'command': 'revoke',
+                'description': "⛓️‍💥 Disable running bot"
+            },
+            {
+                'command': 'safetycheck',
+                'description': "🛡️ Check the bot's safety"
+            },
+        ],
+        fa=[
+            {
+                'command': 'start',
+                'description': '🔰 راهنما'
+            },
+            {
+                'command': 'register',
+                'description': '🔮 ثبت یک ربات جدید'
+            },
+            {
+                'command': 'revoke',
+                'description': "⛓️‍💥 غیرفعال‌سازی ربات درحال اجرا"
+            },
+            {
+                'command': 'safetycheck',
+                'description': "🛡️ چک‌کردن امنیت ربات"
+            },
+        ]
+    )
+    BOT_NAME = Response(
+        en='HidEgo | Anonymous messaging',
+        fa='ربات‌سازِ پیام ناشناس HidEgo'
+    )
+    BOT_SHORT_DESCRIPTION = Response(
+        en='Fully open source and secure anonymous messaging bot creator',
+        fa='ربات‌سازِ پیام ناشناس، کاملاً متن‌باز و امن'
+    )
+
+    BOT_DESCRIPTION = Response(
+        en="""🔸 Create your own unique anonymous messaging bot.
+🔸 Send anonymous messages securely.
+🔸 Manage message history easily.
+🔸 Use interactive buttons for quick actions.
+🔸 Open-source and transparent.
+🔸 Verify safety with /safetycheck.""",
+        fa="""🔸 ایجاد رباتِ اختصاصی پیام ناشناس برای شما.
+🔸 ارسال پیام‌های ناشناس ایمن.
+🔸 مدیریت آسان تاریخچه پیام‌ها.
+🔸 استفاده از دکمه‌های تعاملی برای اقدامات سریع.
+🔸 متن‌باز و شفاف.
+🔸 بررسی امنیت با /safetycheck."""
+)
     CREATED_BOT_COMMANDS = Response(
         en=[
             {
@@ -265,7 +326,6 @@ Please use this bot responsibly and kindly.
 The developer or the bot is not responsible for any messages you may receive from anonymous users who have your bot username.
 The developer cannot identify these users.
 You can communicate with the admin in three different ways:''' + f'''
-📝 <b>Available Options</b>:
 
 1️⃣ {BTN_EMOJI_NO_HISTORY} <b>Anonymous without history</b>
 • Each message is sent completely anonymously.
@@ -288,7 +348,6 @@ To start, simply send your message and select your preferred mode.''',
 توسعه‌دهنده یا ربات هیچ مسئولیتی در قبال پیام‌هایی که ممکن است از کاربران ناشناس دریافت کنید، ندارد.
 توسعه‌دهنده قادر به شناسایی هویت کاربران نیست.
 شما می‌توانید به سه روش مختلف با ادمین ارتباط برقرار کنید:''' + f'''
-📝 <b>گزینه‌های موجود</b>:
 
 1️⃣ {BTN_EMOJI_NO_HISTORY} <b>ناشناس بدون تاریخچه</b>
 • هر پیام به‌صورت کاملاً ناشناس ارسال خواهد شد.
@@ -357,8 +416,8 @@ Some data is only completely hashed upon user interactions (e.g., via callbacks)
     )
 
     LOCAL_FILES_HASHED = Response(
-        en='✅ Local files hashed: {0}',
-        fa='✅ فایل‌های محلی هش شدند: {0}'
+        en='✅ Local files hashed: <b>{0}</b>',
+        fa='✅ فایل‌های محلی هش شدند: <b>{0}</b>'
     )
 
     FETCHING_GITHUB_FILES = Response(
@@ -367,8 +426,8 @@ Some data is only completely hashed upon user interactions (e.g., via callbacks)
     )
 
     GITHUB_FILES_HASHED = Response(
-        en='✅ GitHub files hashed: {0}',
-        fa='✅ فایل‌های گیت‌هاب هش شدند: {0}'
+        en='✅ GitHub files hashed: <b>{0}</b>',
+        fa='✅ فایل‌های گیت‌هاب هش شدند: <b>{0}</b>'
     )
 
     SOURCE_IDENTICAL = Response(
@@ -382,18 +441,18 @@ Some data is only completely hashed upon user interactions (e.g., via callbacks)
     )
 
     EXTRA_FILE = Response(
-        en='🛑 Extra file: {0}',
-        fa='🛑 فایل اضافی: {0}'
+        en='🛑 Extra file: <b>{0}</b>',
+        fa='🛑 فایل اضافی: <b>{0}</b>'
     )
 
     MODIFIED_FILE = Response(
-        en='⚠️ Modified file: {0}',
-        fa='⚠️ فایل تغییر یافته: {0}'
+        en='⚠️ Modified file: <b>{0}</b>',
+        fa='⚠️ فایل تغییر یافته: <b>{0}</b>'
     )
 
     MISSING_FILE = Response(
-        en='🛑 Missing file: {0}',
-        fa='🛑 فایل مفقود: {0}'
+        en='🛑 Missing file: <b>{0}</b>',
+        fa='🛑 فایل مفقود: <b>{0}</b>'
     )
     SAFETYCHECK_COMMAND = Response(
         en='''🔍 <b>Safety Check</b>

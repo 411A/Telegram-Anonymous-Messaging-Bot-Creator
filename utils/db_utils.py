@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 import asyncio
 from configs.constants import SQLITE_DATABASE_NAME
 import logging
+from cachebox import cached, LRUCache
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ class DatabaseManager:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance.db_path = db_path
-            cls._instance._pool: Dict[str, aiosqlite.Connection] = {}
+            cls._instance._pool: Dict[str, aiosqlite.Connection] = dict()
             cls._instance.encryptor = Encryptor()
             # Initialize database tables asynchronously
             asyncio.create_task(cls._instance._init_db())
@@ -376,6 +377,7 @@ class AdminManager:
                     result = await cursor.fetchone()
                     return result is not None
 
+    @cached(LRUCache(maxsize=1000), lambda args, kwargs: args[1] if args else kwargs.get('bot_username'))
     async def get_admin_id_from_bot(self, bot_username: str) -> Optional[int]:
         try:
             # Use deterministic encryption for bot username to ensure consistent lookup

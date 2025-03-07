@@ -1,21 +1,20 @@
 """Constants used throughout the application."""
 from typing import Final, Literal
 
+# Log levels: https://docs.python.org/3/library/logging.html#logging-levels
+LOGGER_STREAM_LEVEL: Final = 'ERROR'
+LOGGER_FILE_LEVEL: Final = 'ERROR'
 
 AVAILABLE_LANGUAGES_LITERAL: Final = Literal['en', 'fa']
 AVAILABLE_LANGUAGES_LIST: Final = ['en', 'fa']
 
 DIFFERENCES_FILE_NAME: Final = "all_differences.md"
 
-# Log levels: https://docs.python.org/3/library/logging.html#logging-levels
-LOGGER_STREAM_LEVEL: Final = 'ERROR'
-LOGGER_FILE_LEVEL: Final = 'ERROR'
-
 DEVELOPER_GITHUB_USERNAME: Final = "411A"
 DEVELOPER_GITHUB_REPOSITORY_NAME: Final = "Telegram-Anonymous-Messaging-Bot-Creator"
 
 MAX_IN_MEMORY_ACTIVE_BOTS: Final = 100
-ADMIN_REPLY_TIMEOUT: Final = 60 * 10
+ADMIN_REPLY_TIMEOUT: Final = 60 * 5
 
 # Separator character
 SEP = '|'

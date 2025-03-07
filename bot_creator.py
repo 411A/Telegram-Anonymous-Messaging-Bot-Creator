@@ -19,7 +19,7 @@ from handlers.anonymous_handler import handle_messages, handle_anonymous_callbac
 from utils.responses import get_response, ResponseKey
 from utils.log_utils import setup_logging
 from utils.github_checker import GitHubChecker
-from utils.other_utils import check_language_availability
+from utils.other_utils import extract_bot_token, shorten_token, check_language_availability
 from configs.constants import (
     CORS_SETTINGS, TELEGRAM_IP_RANGES,
     CBD_ANON_NO_HISTORY,
@@ -38,7 +38,7 @@ import uvicorn
 import logging
 import time
 import io
-import re
+import aiofiles
 
 #! Import cachetools for LRUCache and prepare a per-bot lock dict.
 from cachetools import LRUCache
@@ -61,12 +61,6 @@ MAIN_BOT_USERNAME = None
 GITHUB_CHECK_RESULTS = dict()
 RUNNING_SCRIPT_DATA = None
 RUNNING_SCRIPT_SINCE = None
-
-def shorten_token(token: str) -> str:
-    """Return the token in a shortened format: first 3 chars, '…', last 3 chars."""
-    if len(token) <= 6:
-        return token
-    return f"{token[:3]}…{token[-3:]}"
 
 #! Define a custom LRUCache that calls a cleanup callback on eviction.
 class ApplicationLRUCache(LRUCache):
@@ -112,21 +106,6 @@ db_manager: DatabaseManager = None
 encryptor: Encryptor = None
 admin_manager: AdminManager = None
 
-def extract_bot_token(text: str) -> str:
-    """Extract a valid bot token from text using regex.
-    
-    Args:
-        text (str): The text containing the bot token.
-        
-    Returns:
-        str: The extracted bot token if found, empty string otherwise.
-    """
-    # Pattern matches: digits, followed by ':', followed by allowed chars
-    # Stops at first invalid character
-    pattern = r'\d+:[A-Za-z0-9_-]+'
-    match = re.search(pattern, text)
-    return match.group(0) if match else ''
-
 async def main_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_lang = check_language_availability(update.message.from_user.language_code)
     await update.message.reply_text(get_response(ResponseKey.WELCOME, user_lang), parse_mode=ParseMode.HTML)
@@ -144,20 +123,17 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GITHUB_CHECK_RESULTS, RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA
     user_lang = check_language_availability(update.message.from_user.language_code)
 
-    if not GITHUB_CHECK_RESULTS:
-        GITHUB_CHECK_RESULTS = {}
-
     if user_lang not in GITHUB_CHECK_RESULTS:
         checker = GitHubChecker(
             repo_owner=DEVELOPER_GITHUB_USERNAME,
             repo_name=DEVELOPER_GITHUB_REPOSITORY_NAME,
             branch='main',
-            ignore_folders=['.venv', '__pycache__']
         )
-        diff_result = checker.write_line_differences()
-
         try:
-            GITHUB_CHECK_RESULTS[user_lang] = checker.check_integrity(user_lang=user_lang)
+            # Write differences first since it's used in the check_integrity results
+            await checker.write_line_differences()
+            # Get integrity check results
+            GITHUB_CHECK_RESULTS[user_lang] = await checker.check_integrity(user_lang=user_lang)
             if not GITHUB_CHECK_RESULTS[user_lang]:
                 logger.warning("GitHub checker returned empty results")
                 GITHUB_CHECK_RESULTS[user_lang] = ["⚠️ No security issues detected"]
@@ -201,11 +177,11 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error preparing file data: {e}")
             raise ValueError("Failed to prepare script file data")
 
-        # Prepare the .md file
+        # Prepare the .md file using aiofiles
         try:
             diff_file_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
-            with open(diff_file_path, "rb") as diff_file:
-                diff_file_data = io.BytesIO(diff_file.read())
+            async with aiofiles.open(diff_file_path, "rb") as diff_file:
+                diff_file_data = io.BytesIO(await diff_file.read())
                 diff_file_data.name = DIFFERENCES_FILE_NAME
         except Exception as e:
             logger.error(f"Error reading diff file: {e}")
@@ -217,16 +193,18 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         
         # Only add differences file if there are actual differences
-        if diff_result != "IDENTICAL_FILES":
-            try:
-                diff_file_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
-                with open(diff_file_path, "rb") as diff_file:
-                    diff_file_data = io.BytesIO(diff_file.read())
+        # Add differences file to media group if it exists and has content
+        try:
+            diff_file_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
+            if os.path.exists(diff_file_path) and os.path.getsize(diff_file_path) > 0:
+                async with aiofiles.open(diff_file_path, "rb") as diff_file:
+                    diff_file_data = io.BytesIO(await diff_file.read())
                     diff_file_data.name = DIFFERENCES_FILE_NAME
                 media_group.append(InputMediaDocument(media=diff_file_data, filename=DIFFERENCES_FILE_NAME))
-            except Exception as e:
-                logger.error(f"Error reading diff file: {e}")
-                raise ValueError("Failed to prepare diff file data")
+        except Exception as e:
+            logger.error(f"Error reading diff file: {e}")
+            # Continue without differences file rather than failing completely
+            logger.warning("Continuing without differences file")
 
         # Send media group (both documents together)
         try:
@@ -521,6 +499,7 @@ async def lifespan(app: FastAPI):
                 url=webhook_url,
                 #drop_pending_updates=False,
                 #max_connections=100,
+                allowed_updates=['message'],
                 secret_token=TG_SECRET_TOKEN,
             )
         else:

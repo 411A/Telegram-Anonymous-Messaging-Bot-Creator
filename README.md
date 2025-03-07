@@ -1,14 +1,14 @@
-🤖 **Telegram Anonymous Messaging Bot Creator**  
+#### 🤖 **Hid**den**Ego** - Telegram Anonymous Messaging Bot Creator 
 A robust solution for creating Telegram bots that empower anonymous messaging with powerful management and secure configurations.
 
 ---
 
-🌟 **Overview**  
+#### 🌟 **Overview**  
 This project provides a comprehensive framework for building Telegram bots that handle anonymous messaging. With built-in features such as message forwarding, history management, and administrative controls, it allows you to deploy a secure and feature-rich messaging system. The project is designed with scalability and maintainability in mind, leveraging clear constants and modular code across configurations, handlers, and utility functions.
 
 ---
 
-📦 **Features**  
+#### 📦 **Features**  
 - **Anonymous Messaging**: Send messages without revealing your identity.  
 - **History Management**: Options for sending messages with or without message history.  
 - **Interactive Controls**: Inline buttons with emojis for actions like forwarding, blocking, and reading messages.  
@@ -20,7 +20,7 @@ Users can directly inspect and compare the deployed application with its GitHub 
 
 ---
 
-🚀 **Installation**  
+#### 🚀 **Installation**  
 1. **Clone the Repository**:  
    ```bash
    git clone https://github.com/your-username/Telegram-Anonymous-Messaging-Bot-Creator.git
@@ -36,7 +36,7 @@ Users can directly inspect and compare the deployed application with its GitHub 
 
 ---
 
-⚙️ **Configuration**  
+#### ⚙️ **Configuration**  
 - **Environment Variables**:  
   Copy the provided `.env.example` to a new file named `.env` and update the following placeholders with your own credentials and configuration details:
   - `BOT_CREATOR_USERNAME` – Your bot's username.  
@@ -53,7 +53,7 @@ Users can directly inspect and compare the deployed application with its GitHub 
 
 ---
 
-🔧 **Running the Bot**  
+#### 🔧 **Running the Bot**  
 - **Development**:  
   Run the main bot creator script:  
   ```bash
@@ -70,7 +70,7 @@ Users can directly inspect and compare the deployed application with its GitHub 
 
 ---
 
-☁️ **Deployment with Cloudflare (Production)**  
+#### ☁️ **Deployment with Cloudflare (Production)**  
 For a more secure production deployment, consider using Cloudflare Tunnel. You need a custom domain.
 Follow these steps:
 
@@ -107,12 +107,12 @@ Follow these steps:
 
 ---
 
-🤝 **Contributing**  
+#### 🤝 **Contributing**  
 Contributions are welcome! If you have ideas, bug fixes, or improvements, please open an issue or submit a pull request. Follow standard GitHub practices and ensure your code aligns with the project's guidelines.
 
 ---
 
-📞 **Contact & Support**  
+#### 📞 **Contact & Support**  
 For support or any inquiries, please reach out via:  
 - **Telegram**: [Contact the Developer](https://t.me/ContactHydraBot)  
 - **GitHub Repository**: [Telegram Anonymous Messaging Bot Creator](https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator)

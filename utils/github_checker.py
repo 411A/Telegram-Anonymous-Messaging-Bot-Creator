@@ -10,6 +10,8 @@ from typing import Final
 DIFFERENCES_FILE_NAME: Final = "all_differences.md"
 DEVELOPER_GITHUB_USERNAME: Final = "411A"
 DEVELOPER_GITHUB_REPOSITORY_NAME: Final = "Telegram-Anonymous-Messaging-Bot-Creator"
+DEVELOPER_CONTACT_URL: Final ="https://t.me/ContactHydraBot"
+PROJECT_GITHUB_URL: Final = "https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator"
 
 class GitHubChecker:
     def __init__(self, repo_owner, repo_name, branch="main", ignore_files=None, ignore_folders=None):
@@ -188,7 +190,7 @@ class GitHubChecker:
         print(msg)
         github_hashes = await self._get_github_hashes()
 
-        msg = get_response(ResponseKey.GITHUB_FILES_HASHED, user_lang).format(len(github_hashes))
+        msg = get_response(ResponseKey.GITHUB_FILES_HASHED, user_lang, PROJECT_GITHUB_URL=PROJECT_GITHUB_URL, number=len(github_hashes))
         print(msg)
         responses.append(msg)
 

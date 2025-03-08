@@ -228,7 +228,8 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await media_msgs[0].reply_text(
                 caption,
                 parse_mode=ParseMode.HTML,
-                quote=True
+                quote=True,
+                disable_web_page_preview=True
             )
         except Exception as e:
             logger.error(f"Error sending safety check documents: {e}")

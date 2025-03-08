@@ -426,8 +426,8 @@ Some data is only completely hashed upon user interactions (e.g., via callbacks)
     )
 
     GITHUB_FILES_HASHED = Response(
-        en='✅ GitHub files hashed: <b>{0}</b>',
-        fa='✅ فایل‌های گیت‌هاب هش شدند: <b>{0}</b>'
+        en='✅ <b><a href="{PROJECT_GITHUB_URL}">GitHub</a></b> files hashed: <b>{number}</b>',
+        fa='✅ فایل‌های <b><a href="{PROJECT_GITHUB_URL}">گیت‌هاب</a></b> هش شدند: <b>{number}</b>'
     )
 
     SOURCE_IDENTICAL = Response(

@@ -5,7 +5,11 @@ import aiofiles
 import aiohttp
 import asyncio
 from .responses import get_response, ResponseKey
-from configs.constants import DIFFERENCES_FILE_NAME
+from typing import Final
+
+DIFFERENCES_FILE_NAME: Final = "all_differences.md"
+DEVELOPER_GITHUB_USERNAME: Final = "411A"
+DEVELOPER_GITHUB_REPOSITORY_NAME: Final = "Telegram-Anonymous-Messaging-Bot-Creator"
 
 class GitHubChecker:
     def __init__(self, repo_owner, repo_name, branch="main", ignore_files=None, ignore_folders=None):

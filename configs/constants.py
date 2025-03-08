@@ -8,11 +8,6 @@ LOGGER_FILE_LEVEL: Final = 'ERROR'
 AVAILABLE_LANGUAGES_LITERAL: Final = Literal['en', 'fa']
 AVAILABLE_LANGUAGES_LIST: Final = ['en', 'fa']
 
-DIFFERENCES_FILE_NAME: Final = "all_differences.md"
-
-DEVELOPER_GITHUB_USERNAME: Final = "411A"
-DEVELOPER_GITHUB_REPOSITORY_NAME: Final = "Telegram-Anonymous-Messaging-Bot-Creator"
-
 MAX_IN_MEMORY_ACTIVE_BOTS: Final = 100
 ADMIN_REPLY_TIMEOUT: Final = 60 * 5
 

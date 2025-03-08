@@ -18,7 +18,12 @@ from utils.secure_config import get_encryption_key
 from handlers.anonymous_handler import handle_messages, handle_anonymous_callback, handle_read_callback, handle_admin_callback
 from utils.responses import get_response, ResponseKey
 from utils.log_utils import setup_logging
-from utils.github_checker import GitHubChecker
+from utils.github_checker import (
+    GitHubChecker,
+    DIFFERENCES_FILE_NAME,
+    DEVELOPER_GITHUB_USERNAME,
+    DEVELOPER_GITHUB_REPOSITORY_NAME
+)
 from utils.other_utils import extract_bot_token, shorten_token, check_language_availability
 from configs.constants import (
     CORS_SETTINGS, TELEGRAM_IP_RANGES,
@@ -29,10 +34,7 @@ from configs.constants import (
     CBD_ADMIN_BLOCK,
     CBD_ADMIN_ANSWER,
     CBD_ADMIN_CANCEL_ANSWER,
-    MAX_IN_MEMORY_ACTIVE_BOTS,
-    DIFFERENCES_FILE_NAME,
-    DEVELOPER_GITHUB_USERNAME,
-    DEVELOPER_GITHUB_REPOSITORY_NAME
+    MAX_IN_MEMORY_ACTIVE_BOTS
 )
 import uvicorn
 import logging
@@ -57,10 +59,12 @@ TG_SECRET_TOKEN = os.getenv('TG_SECRET_TOKEN')
 FASTAPI_PORT = int(os.getenv('FASTAPI_PORT'))
 
 MAIN_BOT_USERNAME = None
-# Global variables for GitHub checker cache
+# Global variables for GitHub checker cache and file data
 GITHUB_CHECK_RESULTS = dict()
 RUNNING_SCRIPT_DATA = None
+GITHUB_CHECKER_DATA = None
 RUNNING_SCRIPT_SINCE = None
+GITHUB_CHECKER_FILENAME = "utils/github_checker.py"
 
 #! Define a custom LRUCache that calls a cleanup callback on eviction.
 class ApplicationLRUCache(LRUCache):
@@ -74,7 +78,6 @@ class ApplicationLRUCache(LRUCache):
             # Schedule asynchronous cleanup of the bot application.
             asyncio.create_task(self.on_evicted(key, value))
         return key, value
-
 
 #! Async cleanup callback when a bot application is evicted from the cache.
 async def cleanup_application(token: str, application: Application):
@@ -91,7 +94,6 @@ async def cleanup_application(token: str, application: Application):
         logger.info(f"Cleaned up bot {short_token} due to cache eviction.")
     except Exception as e:
         logger.exception(f"Error shutting down bot {short_token} on eviction: {e}")
-
 
 # Global LRU cache to store active bot applications.
 active_bots = ApplicationLRUCache(maxsize=MAX_IN_MEMORY_ACTIVE_BOTS, on_evicted=cleanup_application)
@@ -120,7 +122,7 @@ async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(get_response(ResponseKey.PRIVACY_COMMAND, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global GITHUB_CHECK_RESULTS, RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA
+    global GITHUB_CHECK_RESULTS, RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME
     user_lang = check_language_availability(update.message.from_user.language_code)
 
     if user_lang not in GITHUB_CHECK_RESULTS:
@@ -171,13 +173,13 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Create a new BytesIO instance from the cached file content
         try:
-            file_to_send = io.BytesIO(RUNNING_SCRIPT_DATA)
-            file_to_send.name = running_script_filename
+            main_file_to_send = io.BytesIO(RUNNING_SCRIPT_DATA)
+            main_file_to_send.name = running_script_filename
         except Exception as e:
             logger.error(f"Error preparing file data: {e}")
             raise ValueError("Failed to prepare script file data")
 
-        # Prepare the .md file using aiofiles
+        # Prepare the .md differences file using aiofiles
         try:
             diff_file_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
             async with aiofiles.open(diff_file_path, "rb") as diff_file:
@@ -189,11 +191,20 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Create a media group (album) to send both files in one message
         media_group = [
-            InputMediaDocument(media=file_to_send, filename=running_script_filename)
+            InputMediaDocument(media=main_file_to_send, filename=running_script_filename),
         ]
+
+        # Add GitHub checker data file if available
+        try:
+            if GITHUB_CHECKER_DATA:
+                github_checker_file = io.BytesIO(GITHUB_CHECKER_DATA)
+                github_checker_file.name = GITHUB_CHECKER_FILENAME
+                media_group.append(InputMediaDocument(media=github_checker_file, filename=GITHUB_CHECKER_FILENAME))
+        except Exception as e:
+            logger.error(f"Error preparing GitHub checker data file: {e}")
+            logger.warning("Continuing without GitHub checker data file")
         
         # Only add differences file if there are actual differences
-        # Add differences file to media group if it exists and has content
         try:
             diff_file_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
             if os.path.exists(diff_file_path) and os.path.getsize(diff_file_path) > 0:
@@ -291,8 +302,6 @@ async def create_and_configure_bot(token: str) -> Application:
             await new_bot.set_webhook(
                 url=webhook_url,
                 allowed_updates=['message', 'callback_query'],
-                #drop_pending_updates=True,
-                #max_connections=100,
                 secret_token=TG_SECRET_TOKEN,
             )
             # Configure bot settings immediately after creation
@@ -349,12 +358,6 @@ async def revoke_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        #* Check if user is a valid user from the given file
-        # user_id = update.effective_user.id
-        # if not await is_valid_user(user_id):
-        #     await update.message.reply_text(get_response(ResponseKey.NOT_AUTHORIZED_TO_REVOKE, user_lang), quote=True, parse_mode=ParseMode.HTML)
-        #     return
-
         # Get the token from the pinned message.
         pinned_msg = update.message.reply_to_message
         if 'Token:' not in pinned_msg.text:
@@ -413,10 +416,6 @@ async def register_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
-    #* Check if user is a valid user from the given file
-    # if not await is_valid_user(user_id):
-    #     await update.message.reply_text(get_response(ResponseKey.NOT_AUTHORIZED, user_lang), quote=True, parse_mode=ParseMode.HTML)
-    #     return
 
     try:
         # Send initial progress message
@@ -454,10 +453,9 @@ async def register_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(f'Error registering bot:\n{str(e)}', parse_mode=ParseMode.HTML)
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, MAIN_BOT_USERNAME, db_manager, encryptor, admin_manager
+    global RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME, MAIN_BOT_USERNAME, db_manager, encryptor, admin_manager
 
     RUNNING_SCRIPT_SINCE = time.strftime("%Y/%m/%d %H:%M", time.gmtime())
 
@@ -471,6 +469,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.exception(f"File read error: {str(e)}")
             RUNNING_SCRIPT_DATA = None 
+
+    if GITHUB_CHECKER_DATA is None:
+        try:
+            github_checker_file_path = os.path.join(os.getcwd(), GITHUB_CHECKER_FILENAME)
+            logger.info(f"Loading GitHub checker data file from: {github_checker_file_path}")
+            async with aiofiles.open(github_checker_file_path, 'rb') as f:
+                GITHUB_CHECKER_DATA = await f.read()
+            logger.debug(f"Successfully read GitHub checker data, {len(GITHUB_CHECKER_DATA)} bytes")
+        except Exception as e:
+            logger.exception(f"GitHub checker data file read error: {str(e)}")
+            GITHUB_CHECKER_DATA = None
 
     db_manager = DatabaseManager()
     encryptor = Encryptor(get_encryption_key())
@@ -497,8 +506,6 @@ async def lifespan(app: FastAPI):
             # Set new webhook with proper configuration
             await main_app.bot.set_webhook(
                 url=webhook_url,
-                #drop_pending_updates=False,
-                #max_connections=100,
                 allowed_updates=['message'],
                 secret_token=TG_SECRET_TOKEN,
             )
@@ -534,7 +541,6 @@ async def lifespan(app: FastAPI):
 logger.warning("Starting FastAPI app...")
 app = FastAPI(lifespan=lifespan)
 logger.warning("FastAPI initialized.")
-
 
 @app.post('/webhook/{bot_token}')
 async def webhook_handler(bot_token: str, request: Request):

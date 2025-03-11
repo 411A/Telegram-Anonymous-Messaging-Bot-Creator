@@ -57,12 +57,38 @@ class ResponseKey(Enum):
             "Please send your bot token to create a new anonymous messaging bot.\n"
             "Use the format:\n/register BOT_TOKEN\n"
             "❗ Note: The person who provides the bot token will become the bot's admin. Do not share your token with anyone.\n"
-            "To disable your bot, reply to the pinned message with /revoke."),
+            "To disable your bot, reply to the pinned message with /revoke.\n\n"
+            "<a href=\"https://rose-charming-mouse-358.mypinata.cloud/ipfs/bafybeifdj5jccidlti3illgucltkzhdqfhzuh3edvb2ksj6f34fqw6jm34\">📺 Bot Creation Guide Video</a>\n"
+            "<blockquote expandable>"
+            "📝 <b>How to Create a Bot</b>\n"
+            "1. <b><a href=\"https://t.me/BotFather\">Open & Start BotFather</a></b>\n"
+            "2. From the bottom-left, tap the ≡ menu and select <code>/newbot</code> or type and send it.\n"
+            "3. Choose a name for your bot.\n"
+            "4. Choose a unique username for your bot.\n"
+            "5. If successful, you'll see a \"Done!\" message. Tap the token shown after \"HTTP API:\" to copy it.\n"
+            "6. <b><a href=\"https://t.me/HidEgoBot\">Open HidEgo</a></b> and start.\n"
+            "7. Type <code>/register</code>, paste your copied token, and send it.\n"
+            "8. If successful, you'll see a button with 🟢. Click it and ask someone to message your anonymous bot. Done!\n"
+            "</blockquote>"
+        ),
         fa=("خوش آمدید!\n"
             "لطفاً توکن ربات خود را برای ایجاد یک ربات پیام ناشناس جدید ارسال کنید.\n"
             "فرمت دستور:\n/register BOT_TOKEN\n"
             "❗ توجه: هرکسی که توکن ربات را ارائه دهد، به عنوان مدیر آن ربات در نظر گرفته می‌شود. توکن خود را با هیچ‌کس به اشتراک نگذارید.\n"
-            "برای غیرفعال‌سازی ربات، به پیام پین‌شده ریپلای کرده و /revoke را ارسال کنید.")
+            "برای غیرفعال‌سازی ربات، به پیام پین‌شده ریپلای کرده و /revoke را ارسال کنید.\n\n"
+            "<a href=\"https://rose-charming-mouse-358.mypinata.cloud/ipfs/bafybeifdj5jccidlti3illgucltkzhdqfhzuh3edvb2ksj6f34fqw6jm34\">📺 راهنمای ویدیویی ساخت ربات</a>\n"
+            "<blockquote expandable>"
+            "📝 <b>راهنمای متنی ساخت ربات</b>\n"
+            "1. <b><a href=\"https://t.me/BotFather\">باز کردن و Start کردن BotFather</a></b>\n"
+            "2. از پایین سمت چپ، روی منوی ≡ بزنید و <code>/newbot</code> را انتخاب کنید یا تایپ کرده و ارسال کنید.\n"
+            "3. نامی برای ربات خود انتخاب کنید.\n"
+            "4. یک نام کاربری منحصر‌به‌فرد برای ربات خود انتخاب کنید.\n"
+            "5. در صورت موفقیت، پیام \"Done!\" نمایش داده می‌شود. روی توکنی که پس از \"HTTP API:\" نشان داده شده بزنید تا کپی شود.\n"
+            "6. <b><a href=\"https://t.me/HidEgoBot\">باز کردن و استارت کردن HidEgoBot</a></b>\n"
+            "7. دستور <code>/register</code> را تایپ کنید و با یک فاصله، توکن کپی‌شده را الصاق و ارسال کنید.\n"
+            "8. در صورت موفقیت، دکمه‌ای با 🟢 نمایش داده می‌شود. روی آن بزنید و از کسی بخواهید به ربات ناشناس شما پیام بفرستد. تمام!\n"
+            "</blockquote>"
+        )
     )
     PROVIDE_TOKEN = Response(
         en="Please provide a bot token:\n<code>/register BOT_TOKEN</code>",

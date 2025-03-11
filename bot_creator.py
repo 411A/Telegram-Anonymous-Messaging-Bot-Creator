@@ -110,7 +110,7 @@ admin_manager: AdminManager = None
 
 async def main_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_lang = check_language_availability(update.message.from_user.language_code)
-    await update.message.reply_text(get_response(ResponseKey.WELCOME, user_lang), parse_mode=ParseMode.HTML)
+    await update.message.reply_text(get_response(ResponseKey.WELCOME, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global MAIN_BOT_USERNAME

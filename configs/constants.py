@@ -7,9 +7,10 @@ LOGGER_FILE_LEVEL: Final = 'ERROR'
 
 AVAILABLE_LANGUAGES_LITERAL: Final = Literal['en', 'fa']
 AVAILABLE_LANGUAGES_LIST: Final = ['en', 'fa']
-
+# Cache maximum 100 active bots in memory
 MAX_IN_MEMORY_ACTIVE_BOTS: Final = 100
-ADMIN_REPLY_TIMEOUT: Final = 60 * 5
+# 20 Minutes answer time
+ADMIN_REPLY_TIMEOUT: Final = 60 * 20
 
 # Separator character
 SEP = '|'

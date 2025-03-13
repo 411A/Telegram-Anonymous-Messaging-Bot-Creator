@@ -3,6 +3,19 @@ A robust solution for creating Telegram bots that empower anonymous messaging wi
 
 ---
 
+#### 💰 **Donations**
+If you find this project helpful, you can support its development through donations on the TON blockchain:
+
+💎 Donate via TON:
+```
+ton://transfer/TechKraken.ton
+```
+```
+UQCGk4IU5nm6dYWjXTx6vSQVOtKO4LQg3m8cRcq1eQo7vhCl
+```
+
+---
+
 #### 🌟 **Overview**  
 This project provides a comprehensive framework for building Telegram bots that handle anonymous messaging. With built-in features such as message forwarding, history management, and administrative controls, it allows you to deploy a secure and feature-rich messaging system. The project is designed with scalability and maintainability in mind, leveraging clear constants and modular code across configurations, handlers, and utility functions.
 

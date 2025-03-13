@@ -3,19 +3,6 @@ A robust solution for creating Telegram bots that empower anonymous messaging wi
 
 ---
 
-#### 💰 **Donations**
-If you find this project helpful, you can support its development through donations on the TON blockchain:
-
-💎 Donate via TON:
-```
-ton://transfer/TechKraken.ton
-```
-```
-UQCGk4IU5nm6dYWjXTx6vSQVOtKO4LQg3m8cRcq1eQo7vhCl
-```
-
----
-
 #### 🌟 **Overview**  
 This project provides a comprehensive framework for building Telegram bots that handle anonymous messaging. With built-in features such as message forwarding, history management, and administrative controls, it allows you to deploy a secure and feature-rich messaging system. The project is designed with scalability and maintainability in mind, leveraging clear constants and modular code across configurations, handlers, and utility functions.
 
@@ -33,10 +20,23 @@ Users can directly inspect and compare the deployed application with its GitHub 
 
 ---
 
+#### 💰 **Donations**
+If you find this project helpful, you can support its development through donations on the TON blockchain:
+
+💎 Donate via TON:
+```
+ton://transfer/TechKraken.ton
+```
+```
+UQCGk4IU5nm6dYWjXTx6vSQVOtKO4LQg3m8cRcq1eQo7vhCl
+```
+
+---
+
 #### 🚀 **Installation**  
 1. **Clone the Repository**:  
    ```bash
-   git clone https://github.com/your-username/Telegram-Anonymous-Messaging-Bot-Creator.git
+   git clone https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator.git
    cd Telegram-Anonymous-Messaging-Bot-Creator
    ```
 2. **Install Dependencies**:  
@@ -84,39 +84,66 @@ Users can directly inspect and compare the deployed application with its GitHub 
 ---
 
 #### ☁️ **Deployment with Cloudflare (Production)**  
-For a more secure production deployment, consider using Cloudflare Tunnel. You need a custom domain.
+For a more secure production deployment, consider using Cloudflare Tunnel. You need a custom domain registered with Cloudflare.
 Follow these steps:
 
 1. **Setup Cloudflare Tunnel**:  
-   Create a new tmux session and start the tunnel:
+   Create a new tmux session and attach:
    ```bash
-   tmux new -s cloudflare-anonmsg -d && tmux attach -t cloudflare-anonmsg
+   # Create and attach to tmux session
+   tmux new -s cloudflare-anontgmsg -d && tmux attach -t cloudflare-anontgmsg
+   
+   # Download and install cloudflared
    wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
    chmod +x cloudflared
    sudo mv cloudflared /usr/local/bin/
+   
+   # Login to Cloudflare
    cloudflared tunnel login
    ```
+   > **Note**: After running the login command, click the provided authentication link in your browser. Select your domain and authorize the tunnel.
+
 2. **Create and Configure Tunnel**:  
-   After logging in, run:
+   Create a new tunnel and save its configuration:
    ```bash
-   cloudflared tunnel create anon_webhook
+   # Create the tunnel
+   cloudflared tunnel create tg-anontgmsg-webhook
+   
+   # Create config directory if it doesn't exist
+   mkdir -p ~/.cloudflared
+   
+   # Create and edit the configuration file
+   touch ~/.cloudflared/anontgmsg_config.yml
    ```
-   Copy the generated tunnel ID, then create a configuration file (e.g., `~/.cloudflared/anon_config.yml`) with the following content:
+   
+   Add the following to your `~/.cloudflared/anontgmsg_config.yml` file (replace with your values):
    ```yaml
-   tunnel: <your-tunnel-id>
-   credentials-file: /full/path/to/your/credentials.json
+   # Replace tunnel ID with the one generated in previous step
+   tunnel: abc123de-f456-789g-hijk-lmnop0123456
+   # Update path to match your system
+   credentials-file: /home/username/.cloudflared/abc123de-f456-789g-hijk-lmnop0123456.json
 
    ingress:
      - hostname: webhook.yourdomain.com
+       # Adjust port as needed (Same with FASTAPI_PORT)
        service: http://localhost:8000
      - service: http_status:404
    ```
-3. **Route the Tunnel**:  
-   Configure the route for your domain:
+
+3. **Route and Start the Tunnel**:  
+   Configure the DNS route and start the tunnel:
    ```bash
-   cloudflared tunnel route https anon_webhook webhook.yourdomain.com
-   cloudflared tunnel --config ~/.cloudflared/anon_config.yml run anon_webhook
+   # Create DNS route
+   cloudflared tunnel route dns tg-anontgmsg-webhook webhook.yourdomain.com
+   
+   # Start the tunnel inside the tmux
+   cloudflared tunnel --config ~/.cloudflared/anontgmsg_config.yml run tg-anontgmsg-webhook
    ```
+
+   > **Pro Tips**: 
+   > - Use `Ctrl+B, D` to detach from tmux session
+   > - Use `tmux a -t cloudflare-anontgmsg` to reattach
+   > - Remember to update your `.env` file with the new webhook URL
 
 ---
 

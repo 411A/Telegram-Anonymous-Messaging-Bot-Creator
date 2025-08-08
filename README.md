@@ -56,7 +56,8 @@ UQCGk4IU5nm6dYWjXTx6vSQVOtKO4LQg3m8cRcq1eQo7vhCl
   - `MAIN_BOT_TOKEN` – Your Telegram Bot API token.  
   - `WEBHOOK_BASE_URL` – The URL to your webhook endpoint (use _ngrok_ for local development).  
   - `TG_SECRET_TOKEN` – A secure token for webhook verification.  
-  - `TZ` – Set your timezone (e.g., `Asia/Tehran`).  
+  - `LOG_FILENAME` - Log filename to log errors.
+  - `LOGGER_TIMEZONE` – Set your timezone (e.g., `Asia/Tehran`).  
   - `FASTAPI_PORT` – The port number on which the API server will run.
   
   > **Note**: Ensure all sensitive data (tokens, secret keys) are kept secure and are not exposed publicly.

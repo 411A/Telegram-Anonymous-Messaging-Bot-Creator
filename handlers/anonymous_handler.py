@@ -4,7 +4,8 @@ from telegram import Message, InlineKeyboardButton, InlineKeyboardMarkup, Reacti
 from telegram.constants import ParseMode
 from utils.responses import get_response, ResponseKey
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
-from utils.other_utils import generate_anonymous_id, check_language_availability, AdminsReplyCache
+from utils.helpers import generate_anonymous_id, check_language_availability
+from utils.cache import AdminsReplyCache
 from configs.settings import (
     SEP,
     CBD_ANON_NO_HISTORY,

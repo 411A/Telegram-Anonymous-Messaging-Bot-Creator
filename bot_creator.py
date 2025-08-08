@@ -23,7 +23,7 @@ from utils.github_checker import (
     DEVELOPER_GITHUB_USERNAME,
     DEVELOPER_GITHUB_REPOSITORY_NAME
 )
-from utils.other_utils import extract_bot_token, shorten_token, check_language_availability
+from utils.helpers import extract_bot_token, shorten_token, check_language_availability
 from configs.settings import (
     MAIN_BOT_TOKEN,
     WEBHOOK_BASE_URL,

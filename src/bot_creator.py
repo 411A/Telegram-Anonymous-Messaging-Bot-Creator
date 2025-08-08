@@ -1,4 +1,3 @@
-import os
 import asyncio
 import ipaddress
 from contextlib import asynccontextmanager
@@ -20,16 +19,8 @@ from utils.log_utils import setup_logging
 from utils.github_checker import (
     GitHubChecker,
     DIFFERENCES_FILE_NAME,
-    DEVELOPER_GITHUB_USERNAME,
-    DEVELOPER_GITHUB_REPOSITORY_NAME
 )
 from utils.helpers import extract_bot_token, shorten_token, check_language_availability
-from configs.settings import (
-    MAIN_BOT_TOKEN,
-    WEBHOOK_BASE_URL,
-    TG_SECRET_TOKEN,
-    FASTAPI_PORT
-)
 from configs.settings import (
     CORS_SETTINGS, TELEGRAM_IP_RANGES,
     CBD_ANON_NO_HISTORY,
@@ -39,12 +30,20 @@ from configs.settings import (
     CBD_ADMIN_BLOCK,
     CBD_ADMIN_ANSWER,
     CBD_ADMIN_CANCEL_ANSWER,
-    MAX_IN_MEMORY_ACTIVE_BOTS
+    MAX_IN_MEMORY_ACTIVE_BOTS,
+    MAIN_BOT_TOKEN,
+    WEBHOOK_BASE_URL,
+    TG_SECRET_TOKEN,
+    FASTAPI_PORT,
+    DEVELOPER_GITHUB_USERNAME,
+    DEVELOPER_GITHUB_REPOSITORY_NAME,
+    GITHUB_CHECKER_FILENAME
 )
 import uvicorn
 import logging
 import time
 import io
+from pathlib import Path
 import aiofiles
 
 #! Import cachetools for LRUCache and prepare a per-bot lock dict.
@@ -61,7 +60,6 @@ GITHUB_CHECK_RESULTS = dict()
 RUNNING_SCRIPT_DATA = None
 GITHUB_CHECKER_DATA = None
 RUNNING_SCRIPT_SINCE = None
-GITHUB_CHECKER_FILENAME = "utils/github_checker.py"
 
 #! Define a custom LRUCache that calls a cleanup callback on eviction.
 class ApplicationLRUCache(LRUCache):
@@ -163,7 +161,7 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Get the filename of the currently running script
         try:
-            running_script_filename = os.path.basename(__file__)
+            running_script_filename = Path(__file__).name
         except Exception as e:
             logger.error(f"Error getting script filename: {e}")
             running_script_filename = "bot_creator.py"
@@ -178,10 +176,10 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Prepare the .md differences file using aiofiles
         try:
-            diff_file_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
+            diff_file_path = str(DIFFERENCES_FILE_NAME)
             async with aiofiles.open(diff_file_path, "rb") as diff_file:
                 diff_file_data = io.BytesIO(await diff_file.read())
-                diff_file_data.name = DIFFERENCES_FILE_NAME
+                diff_file_data.name = str(DIFFERENCES_FILE_NAME.name)
         except Exception as e:
             logger.error(f"Error reading diff file: {e}")
             raise ValueError("Failed to prepare diff file data")
@@ -195,20 +193,20 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if GITHUB_CHECKER_DATA:
                 github_checker_file = io.BytesIO(GITHUB_CHECKER_DATA)
-                github_checker_file.name = GITHUB_CHECKER_FILENAME
-                media_group.append(InputMediaDocument(media=github_checker_file, filename=GITHUB_CHECKER_FILENAME))
+                github_checker_file.name = str(GITHUB_CHECKER_FILENAME.name)
+                media_group.append(InputMediaDocument(media=github_checker_file, filename=str(GITHUB_CHECKER_FILENAME.name)))
         except Exception as e:
             logger.error(f"Error preparing GitHub checker data file: {e}")
             logger.warning("Continuing without GitHub checker data file")
         
         # Only add differences file if there are actual differences
         try:
-            diff_file_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
-            if os.path.exists(diff_file_path) and os.path.getsize(diff_file_path) > 0:
+            diff_file_path = DIFFERENCES_FILE_NAME
+            if diff_file_path.exists() and diff_file_path.stat().st_size > 0:
                 async with aiofiles.open(diff_file_path, "rb") as diff_file:
                     diff_file_data = io.BytesIO(await diff_file.read())
-                    diff_file_data.name = DIFFERENCES_FILE_NAME
-                media_group.append(InputMediaDocument(media=diff_file_data, filename=DIFFERENCES_FILE_NAME))
+                    diff_file_data.name = str(DIFFERENCES_FILE_NAME.name)
+                media_group.append(InputMediaDocument(media=diff_file_data, filename=str(DIFFERENCES_FILE_NAME.name)))
         except Exception as e:
             logger.error(f"Error reading diff file: {e}")
             # Continue without differences file rather than failing completely
@@ -229,7 +227,7 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 disable_web_page_preview=True
             )
         except Exception as e:
-            logger.error(f"Error sending safety check documents: {e}")
+            logger.exception(f"Error sending safety check documents:\n{e}")
             await update.message.reply_text(
                 get_response(ResponseKey.SAFETYCHECK_ERROR, user_lang),
                 quote=True
@@ -459,7 +457,7 @@ async def lifespan(app: FastAPI):
 
     if RUNNING_SCRIPT_DATA is None:
         try:
-            script_path = os.path.abspath(__file__)
+            script_path = Path(__file__).resolve()
             logger.info(f"Loading script from: {script_path}")
             with open(script_path, 'rb') as f:
                 RUNNING_SCRIPT_DATA = f.read()
@@ -470,7 +468,7 @@ async def lifespan(app: FastAPI):
 
     if GITHUB_CHECKER_DATA is None:
         try:
-            github_checker_file_path = os.path.join(os.getcwd(), GITHUB_CHECKER_FILENAME)
+            github_checker_file_path = GITHUB_CHECKER_FILENAME
             logger.info(f"Loading GitHub checker data file from: {github_checker_file_path}")
             async with aiofiles.open(github_checker_file_path, 'rb') as f:
                 GITHUB_CHECKER_DATA = await f.read()

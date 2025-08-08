@@ -5,13 +5,8 @@ import aiofiles
 import aiohttp
 import asyncio
 from .responses import get_response, ResponseKey
-from typing import Final
+from configs.settings import PROJECT_GITHUB_URL, DIFFERENCES_FILE_NAME
 
-DIFFERENCES_FILE_NAME: Final = "all_differences.md"
-DEVELOPER_GITHUB_USERNAME: Final = "411A"
-DEVELOPER_GITHUB_REPOSITORY_NAME: Final = "Telegram-Anonymous-Messaging-Bot-Creator"
-DEVELOPER_CONTACT_URL: Final ="https://t.me/ContactHydraBot"
-PROJECT_GITHUB_URL: Final = "https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator"
 
 class GitHubChecker:
     def __init__(self, repo_owner, repo_name, branch="main", ignore_files=None, ignore_folders=None):
@@ -59,10 +54,10 @@ class GitHubChecker:
 
     def _get_running_file_dir(self):
         """Get the root directory of the project."""
-        # Get the directory of the currently running file
+        # Get the directory of the currently running file (e.g., .../src/utils)
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        # Go up one level to get to the project root
-        return os.path.dirname(current_dir)
+        # Go up two levels to get the project root (from utils to src, then src to root)
+        return os.path.dirname(os.path.dirname(current_dir))
 
     async def _get_file_hash(self, filepath, algorithm="sha256"):
         """Compute the hash of a file."""

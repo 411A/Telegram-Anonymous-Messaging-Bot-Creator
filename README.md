@@ -148,6 +148,22 @@ Follow these steps:
 
 ---
 
+#### 🔄 **Update from GitHub Source**
+
+```bash
+cd Telegram-Anonymous-Messaging-Bot-Creator
+```
+
+```bash
+git remote add origin https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator.git
+```
+
+```bash
+git fetch origin && git checkout origin/main .
+```
+
+---
+
 #### 🤝 **Contributing**  
 Contributions are welcome! If you have ideas, bug fixes, or improvements, please open an issue or submit a pull request. Follow standard GitHub practices and ensure your code aligns with the project's guidelines.
 

@@ -29,13 +29,19 @@ def verify_key(password: str, salt: bytes, key_verification: bytes) -> bool:
         key_verification
     )
 
-def get_encryption_key() -> str:
+def get_encryption_key() -> str | None:
     config_path = Path(SECURE_CONFIG_FILE)
     
     if not config_path.exists():
-        print("Initial setup - please set your encryption password.")
+        print("Initial setup - please set your encryption password (or enter '0' or 'exit' or 'q' to quit).")
         while True:
             password = getpass.getpass("Enter new encryption password: ")
+            
+            # Check for exit condition
+            if password.lower() in ('0', 'exit', 'q'):
+                print("Setup cancelled. Exiting.")
+                return None
+
             if len(password) < 12:
                 print("Password must be at least 12 characters long.")
                 continue
@@ -58,11 +64,19 @@ def get_encryption_key() -> str:
     
     max_attempts = 3
     for attempt in range(max_attempts):
-        password = getpass.getpass("Enter encryption password: ")
+        password = getpass.getpass("Enter encryption password (or '0' or 'exit' or 'q' to quit): ")
+
+        # Check for exit condition
+        if password.lower() in ('0', 'exit', 'q'):
+            print("Exiting.")
+            return None
+
         if verify_key(password, salt, key_verification):
             return password
         remaining = max_attempts - attempt - 1
         if remaining > 0:
             print(f"Invalid password. {remaining} attempts remaining.")
-    
-    raise ValueError("Maximum password attempts exceeded. Please contact system administrator.")
+
+    # If all attempts fail, return None to signal failure
+    print("Maximum password attempts exceeded.")
+    return None

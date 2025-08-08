@@ -1,6 +1,9 @@
 .git/
 .venv/
 __pycache__/
+data/
+logs/
+secret/
 .env
 config.secure
 all_differences.md

@@ -4,7 +4,13 @@ import os
 from dotenv import load_dotenv
 
 # Base directory = one level up from src/
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+DATA_FOLDER_NAME = 'data'
+SECURE_CONFIG_FOLDER_NAME = 'secret'
+LOG_FOLDER_NAME = 'logs'
+Path(BASE_DIR / DATA_FOLDER_NAME).mkdir(exist_ok=True)
+Path(BASE_DIR / SECURE_CONFIG_FOLDER_NAME).mkdir(exist_ok=True)
+Path(BASE_DIR / LOG_FOLDER_NAME).mkdir(exist_ok=True)
 
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=True)
 
@@ -24,8 +30,18 @@ ADMIN_REPLY_TIMEOUT: Final = 60 * 20
 # Separator character
 SEP = '|'
 
-SQLITE_DATABASE_NAME = BASE_DIR / 'data' / 'DATA.db'
-SECURE_CONFIG_FILE = BASE_DIR / 'config' / 'config.secure'
+SQLITE_DATABASE_NAME = BASE_DIR / DATA_FOLDER_NAME / 'DATA.db'
+SECURE_CONFIG_FILE = BASE_DIR / SECURE_CONFIG_FOLDER_NAME / 'config.secure'
+# The file where safety check differences are stored
+DIFFERENCES_FILE_NAME: Final = BASE_DIR / 'all_differences.md'
+GITHUB_CHECKER_FILENAME = BASE_DIR / 'src' / 'utils' / 'github_checker.py'
+
+# GitHub repository details for the safety checker
+DEVELOPER_GITHUB_USERNAME: Final = "411A"
+DEVELOPER_GITHUB_REPOSITORY_NAME: Final = "Telegram-Anonymous-Messaging-Bot-Creator"
+
+# Project URL
+PROJECT_GITHUB_URL: Final = f"https://github.com/{DEVELOPER_GITHUB_USERNAME}/{DEVELOPER_GITHUB_REPOSITORY_NAME}"
 
 # Emoji on InlineButtons
 BTN_EMOJI_NO_HISTORY: Final = '😶‍🌫️'
@@ -81,8 +97,7 @@ WEBHOOK_BASE_URL = os.getenv('WEBHOOK_BASE_URL')
 TG_SECRET_TOKEN = os.getenv('TG_SECRET_TOKEN')
 FASTAPI_PORT = int(os.getenv('FASTAPI_PORT') or 8000)
 LOG_FILENAME = os.getenv('LOG_FILENAME') or 'Logs.log'
-LOG_FILENAME = BASE_DIR / 'logs' / LOG_FILENAME
+LOG_FILENAME = BASE_DIR / LOG_FOLDER_NAME / LOG_FILENAME
 LOGGER_TIMEZONE = os.getenv('LOGGER_TIMEZONE') or 'UTC'
-PROJECT_GITHUB_URL = os.getenv('PROJECT_GITHUB_URL') or 'https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator'
 DEVELOPER_CONTACT_URL = os.getenv('DEVELOPER_CONTACT_URL') or 'https://t.me/ContactHydraBot'
 #endregion Environment Variables

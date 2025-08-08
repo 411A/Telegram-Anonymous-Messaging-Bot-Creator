@@ -2,7 +2,6 @@ import os
 import asyncio
 import ipaddress
 from contextlib import asynccontextmanager
-from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
@@ -25,7 +24,13 @@ from utils.github_checker import (
     DEVELOPER_GITHUB_REPOSITORY_NAME
 )
 from utils.other_utils import extract_bot_token, shorten_token, check_language_availability
-from configs.constants import (
+from configs.settings import (
+    MAIN_BOT_TOKEN,
+    WEBHOOK_BASE_URL,
+    TG_SECRET_TOKEN,
+    FASTAPI_PORT
+)
+from configs.settings import (
     CORS_SETTINGS, TELEGRAM_IP_RANGES,
     CBD_ANON_NO_HISTORY,
     CBD_ANON_WITH_HISTORY,
@@ -49,14 +54,6 @@ from collections import defaultdict
 # Initialize logging when module is imported
 setup_logging()
 logger = logging.getLogger(__name__)
-
-load_dotenv(override=True)
-
-# Environment variables
-MAIN_BOT_TOKEN = os.getenv('MAIN_BOT_TOKEN')
-WEBHOOK_BASE_URL = os.getenv('WEBHOOK_BASE_URL')
-TG_SECRET_TOKEN = os.getenv('TG_SECRET_TOKEN')
-FASTAPI_PORT = int(os.getenv('FASTAPI_PORT'))
 
 MAIN_BOT_USERNAME = None
 # Global variables for GitHub checker cache and file data

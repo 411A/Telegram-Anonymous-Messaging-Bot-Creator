@@ -6,7 +6,7 @@ import hashlib
 import random
 import string
 import time
-from configs.constants import AVAILABLE_LANGUAGES_LITERAL, AVAILABLE_LANGUAGES_LIST
+from configs.settings import AVAILABLE_LANGUAGES_LITERAL, AVAILABLE_LANGUAGES_LIST
 from typing import Dict, Any, Optional
 
 def extract_bot_token(text: str) -> str:

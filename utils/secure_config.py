@@ -4,7 +4,7 @@ import base64
 from pathlib import Path
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from configs.constants import SECURE_CONFIG_FILE
+from configs.settings import SECURE_CONFIG_FILE
 
 def generate_salt() -> bytes:
     return secrets.token_bytes(32)

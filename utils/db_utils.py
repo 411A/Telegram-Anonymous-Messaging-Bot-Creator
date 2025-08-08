@@ -7,7 +7,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 from contextlib import asynccontextmanager
 import asyncio
-from configs.constants import SQLITE_DATABASE_NAME
+from configs.settings import SQLITE_DATABASE_NAME
 import logging
 from cachebox import cached, LRUCache
 

@@ -1,7 +1,7 @@
 from enum import Enum
 from dataclasses import dataclass
 from typing import Union, List, Dict, Any
-from configs.constants import (
+from configs.settings import (
     BTN_EMOJI_NO_HISTORY, BTN_EMOJI_WITH_HISTORY, BTN_EMOJI_FORWARD,
     BTN_EMOJI_BLOCK, BTN_EMOJI_UNBLOCK
 )

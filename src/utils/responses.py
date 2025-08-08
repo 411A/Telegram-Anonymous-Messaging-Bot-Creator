@@ -3,14 +3,9 @@ from dataclasses import dataclass
 from typing import Union, List, Dict, Any
 from configs.settings import (
     BTN_EMOJI_NO_HISTORY, BTN_EMOJI_WITH_HISTORY, BTN_EMOJI_FORWARD,
-    BTN_EMOJI_BLOCK, BTN_EMOJI_UNBLOCK
+    BTN_EMOJI_BLOCK, BTN_EMOJI_UNBLOCK,
+    PROJECT_GITHUB_URL, DEVELOPER_CONTACT_URL
 )
-from dotenv import load_dotenv
-import os
-
-load_dotenv(override=True)
-PROJECT_GITHUB_URL = os.getenv('PROJECT_GITHUB_URL')
-DEVELOPER_CONTACT_URL = os.getenv('DEVELOPER_CONTACT_URL')
 
 # Use Union to support both string responses and list/dict responses.
 @dataclass(frozen=True)

@@ -1,6 +1,15 @@
-"""Constants used throughout the application."""
+from pathlib import Path
 from typing import Final, Literal
+import os
+from dotenv import load_dotenv
 
+# Base directory = one level up from src/
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+load_dotenv(dotenv_path=BASE_DIR / ".env", override=True)
+
+#* Constants used throughout the application
+#region Constants
 # Log levels: https://docs.python.org/3/library/logging.html#logging-levels
 LOGGER_STREAM_LEVEL: Final = 'ERROR'
 LOGGER_FILE_LEVEL: Final = 'ERROR'
@@ -15,8 +24,8 @@ ADMIN_REPLY_TIMEOUT: Final = 60 * 20
 # Separator character
 SEP = '|'
 
-SQLITE_DATABASE_NAME = 'DATA.db'
-SECURE_CONFIG_FILE = 'config.secure'
+SQLITE_DATABASE_NAME = BASE_DIR / 'data' / 'DATA.db'
+SECURE_CONFIG_FILE = BASE_DIR / 'config' / 'config.secure'
 
 # Emoji on InlineButtons
 BTN_EMOJI_NO_HISTORY: Final = '😶‍🌫️'
@@ -64,3 +73,16 @@ CORS_SETTINGS = {
     'allow_methods': ["POST"],  # Only allow POST for webhooks
     'allow_headers': ['*']
 }
+#endregion Constants
+
+#region Environment Variables
+MAIN_BOT_TOKEN = os.getenv('MAIN_BOT_TOKEN')
+WEBHOOK_BASE_URL = os.getenv('WEBHOOK_BASE_URL')
+TG_SECRET_TOKEN = os.getenv('TG_SECRET_TOKEN')
+FASTAPI_PORT = int(os.getenv('FASTAPI_PORT') or 8000)
+LOG_FILENAME = os.getenv('LOG_FILENAME') or 'Logs.log'
+LOG_FILENAME = BASE_DIR / 'logs' / LOG_FILENAME
+LOGGER_TIMEZONE = os.getenv('LOGGER_TIMEZONE') or 'UTC'
+PROJECT_GITHUB_URL = os.getenv('PROJECT_GITHUB_URL') or 'https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator'
+DEVELOPER_CONTACT_URL = os.getenv('DEVELOPER_CONTACT_URL') or 'https://t.me/ContactHydraBot'
+#endregion Environment Variables

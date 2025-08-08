@@ -3,13 +3,7 @@ from zoneinfo import ZoneInfo
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from typing import Dict
-from dotenv import load_dotenv
-import os
-from configs.settings import LOGGER_STREAM_LEVEL, LOGGER_FILE_LEVEL
-
-load_dotenv(override=True)
-
-TZ = os.getenv('TZ')
+from configs.settings import LOG_FILENAME, LOGGER_TIMEZONE, LOGGER_STREAM_LEVEL, LOGGER_FILE_LEVEL
 
 # Log messages with emojis for better visibility
 log_messages: Dict[str, str] = {
@@ -52,7 +46,7 @@ def setup_logging():
     # Formats and settings
     file_logging_format = f"\n{'─'*5}\n📅 %(asctime)s.%(msecs)03d 💥%(levelname)s💥 📁 %(filename)s 🔢%(lineno)d\n📝 %(message)s"
     logging_date_format = r"%Y/%m/%d %H:%M:%S"
-    logging_tz = ZoneInfo(TZ)
+    logging_tz = ZoneInfo(LOGGER_TIMEZONE)
 
     # Set timezone converter using native Python timezone
     logging.Formatter.converter = lambda *args: dt.now(tz=logging_tz).timetuple()
@@ -75,12 +69,12 @@ def setup_logging():
     # Rotating File Handler with detailed formatting
     # Clear the log file before setting up the handler
     try:
-        with open('Logs.log', 'w', encoding='utf-8') as f:
+        with open(LOG_FILENAME, 'w', encoding='utf-8') as f:
             f.truncate(0)
     except FileNotFoundError:
         pass
     file_logging = TimedRotatingFileHandler(
-        filename='Logs.log',
+        filename=LOG_FILENAME,
         encoding='utf-8',
         # Rotation happens at midnight
         when='midnight',

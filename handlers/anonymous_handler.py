@@ -5,7 +5,7 @@ from telegram.constants import ParseMode
 from utils.responses import get_response, ResponseKey
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
 from utils.other_utils import generate_anonymous_id, check_language_availability, AdminsReplyCache
-from configs.constants import (
+from configs.settings import (
     SEP,
     CBD_ANON_NO_HISTORY,
     CBD_ANON_WITH_HISTORY,

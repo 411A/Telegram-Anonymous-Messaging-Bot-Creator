@@ -1,12 +1,8 @@
 import aiohttp
 import asyncio
-import os
-from dotenv import load_dotenv
-from utils.responses import ResponseKey
+from src.utils.responses import ResponseKey
+from src.configs.settings import MAIN_BOT_TOKEN
 
-# Load environment variables
-load_dotenv(override=True)
-MAIN_BOT_TOKEN = os.getenv('MAIN_BOT_TOKEN')
 
 # Configuration using ResponseKey Enum
 MAIN_BOT_COMMANDS = ResponseKey.MAIN_BOT_COMMANDS

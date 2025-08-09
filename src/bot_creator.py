@@ -107,6 +107,25 @@ async def main_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_lang = check_language_availability(update.message.from_user.language_code)
     await update.message.reply_text(get_response(ResponseKey.WELCOME, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
+async def main_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_lang = check_language_availability(update.message.from_user.language_code)
+    if user_lang == "fa":
+        button_text = "💎 هدیه رمزارز TON به توسعه‌دهنده"
+    else:
+        button_text = "💎 Donate TON"
+    keyboard = [[InlineKeyboardButton(button_text, url="ton://transfer/TechKraken.ton")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        get_response(
+            ResponseKey.ABOUT_COMMAND,
+            user_lang,
+        ),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        quote=True,
+        reply_markup=reply_markup
+    )
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global MAIN_BOT_USERNAME
     user_lang = check_language_availability(update.message.from_user.language_code)
@@ -114,7 +133,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_lang = check_language_availability(update.message.from_user.language_code)
-    await update.message.reply_text(get_response(ResponseKey.PRIVACY_COMMAND, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    await update.message.reply_text(get_response(ResponseKey.PRIVACY_COMMAND, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True, quote=True)
 
 async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GITHUB_CHECK_RESULTS, RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME
@@ -487,6 +506,8 @@ async def lifespan(app: FastAPI):
     main_app.add_handler(CommandHandler('register', register_bot))
     main_app.add_handler(CommandHandler('revoke', revoke_bot))
     main_app.add_handler(CommandHandler('safetycheck', safetycheck))
+    main_app.add_handler(CommandHandler('privacy', privacy))
+    main_app.add_handler(CommandHandler('about', main_about))
 
     try:
         if not MAIN_BOT_USERNAME:

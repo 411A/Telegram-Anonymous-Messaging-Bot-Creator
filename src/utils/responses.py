@@ -50,7 +50,7 @@ class ResponseKey(Enum):
     WELCOME = Response(
         en=("Welcome!\n"
             "Please send your bot token to create a new anonymous messaging bot.\n"
-            "Use the format:\n/register BOT_TOKEN\n"
+            "Use the format:\n<code>/register BOT_TOKEN</code>\n"
             "❗ Note: The person who provides the bot token will become the bot's admin. Do not share your token with anyone.\n"
             "To disable your bot, reply to the pinned message with /revoke.\n\n"
             "<a href=\"https://rose-charming-mouse-358.mypinata.cloud/ipfs/bafybeifdj5jccidlti3illgucltkzhdqfhzuh3edvb2ksj6f34fqw6jm34\">📺 Bot Creation Guide Video</a>\n"
@@ -68,7 +68,7 @@ class ResponseKey(Enum):
         ),
         fa=("خوش آمدید!\n"
             "لطفاً توکن ربات خود را برای ایجاد یک ربات پیام ناشناس جدید ارسال کنید.\n"
-            "فرمت دستور:\n/register BOT_TOKEN\n"
+            "فرمت دستور:\n<code>/register BOT_TOKEN</code>\n"
             "❗ توجه: هرکسی که توکن ربات را ارائه دهد، به عنوان مدیر آن ربات در نظر گرفته می‌شود. توکن خود را با هیچ‌کس به اشتراک نگذارید.\n"
             "برای غیرفعال‌سازی ربات، به پیام پین‌شده ریپلای کرده و /revoke را ارسال کنید.\n\n"
             "<a href=\"https://rose-charming-mouse-358.mypinata.cloud/ipfs/bafybeifdj5jccidlti3illgucltkzhdqfhzuh3edvb2ksj6f34fqw6jm34\">📺 راهنمای ویدیویی ساخت ربات</a>\n"
@@ -267,6 +267,14 @@ class ResponseKey(Enum):
                 'command': 'safetycheck',
                 'description': "🛡️ Check the bot's safety"
             },
+            {
+                'command': 'privacy',
+                'description': "🔏 Privacy Policy"
+            },
+            {
+                'command': 'about',
+                'description': "👨🏻‍💻 About Developer"
+            }
         ],
         fa=[
             {
@@ -285,6 +293,14 @@ class ResponseKey(Enum):
                 'command': 'safetycheck',
                 'description': "🛡️ چک‌کردن امنیت ربات"
             },
+            {
+                'command': 'privacy',
+                'description': "🔏 سیاست حفظ حریم خصوصی"
+            },
+            {
+                'command': 'about',
+                'description': "👨🏻‍💻 درباره توسعه‌دهنده"
+            }
         ]
     )
     BOT_NAME = Response(
@@ -346,7 +362,7 @@ This bot enables secure and anonymous messaging, created by @{BOT_CREATOR_USERNA
 Please use this bot responsibly and kindly.
 The developer or the bot is not responsible for any messages you may receive from anonymous users who have your bot username.
 The developer cannot identify these users.
-You can communicate with the admin in three different ways:''' + f'''
+Users can communicate with the admin in three different ways:''' + f'''
 
 1️⃣ {BTN_EMOJI_NO_HISTORY} <b>Anonymous without history</b>
 • Each message is sent completely anonymously.
@@ -368,7 +384,7 @@ To start, simply send your message and select your preferred mode.''',
 لطفاً از این ربات به صورت مسئولانه و محترمانه استفاده کنید.
 توسعه‌دهنده یا ربات هیچ مسئولیتی در قبال پیام‌هایی که ممکن است از کاربران ناشناس دریافت کنید، ندارد.
 توسعه‌دهنده قادر به شناسایی هویت کاربران نیست.
-شما می‌توانید به سه روش مختلف با ادمین ارتباط برقرار کنید:''' + f'''
+به‌عنوانِ کاربر، شما می‌توانید به سه روش مختلف با ادمین ارتباط برقرار کنید:''' + f'''
 
 1️⃣ {BTN_EMOJI_NO_HISTORY} <b>ناشناس بدون تاریخچه</b>
 • هر پیام به‌صورت کاملاً ناشناس ارسال خواهد شد.
@@ -388,7 +404,7 @@ To start, simply send your message and select your preferred mode.''',
 برای شروع، کافی است پیام خود را ارسال کرده و روش دلخواه خود را انتخاب کنید.'''
     )
     PRIVACY_COMMAND = Response(
-        en=f'''💽 <b>What Data We Store</b>:
+        en=f'''💽 <b>What Data We Store</b>:<blockquote expandable>
 This bot is fully open-source, and you can view its source code <a href="{PROJECT_GITHUB_URL}">here</a>.
 You can check the bot's safety using the /safetycheck command.
 We do not store messages or their relationships.
@@ -401,7 +417,7 @@ Some data is only completely hashed upon user interactions (e.g., via callbacks)
 • Encrypted bot token
 
 🔸 <b>User-Side</b>:
-• Encrypted user ID (only a portion of the encrypted hash is stored; decryption occurs when the user provides the callback data)
+• Encrypted user ID (only a portion of the encrypted hash is stored; decryption occurs when the user provides the callback data)</blockquote>
 
 🔎 <b>How We Collect It</b>:
 • Data is securely collected directly from Telegram servers through user interactions with our bot (e.g., when a user sends a message).
@@ -409,7 +425,7 @@ Some data is only completely hashed upon user interactions (e.g., via callbacks)
 
 🧑‍💻 <b>What We Use Data For</b>:
 • To send messages between the user and the admin securely and anonymously.''',
-        fa=f'''💽 <b>داده‌هایی که ذخیره می‌کنیم</b>:
+        fa=f'''💽 <b>داده‌هایی که ذخیره می‌کنیم</b>:<blockquote expandable>
 این ربات کاملاً متن‌باز است و شما می‌توانید کد منبع آن را <a href="{PROJECT_GITHUB_URL}">اینجا</a> مشاهده کنید.
 شما می‌توانید امنیت ربات را با دستور /safetycheck چک کنید.
 ما پیام‌ها یا روابط آن‌ها را ذخیره نمی‌کنیم.
@@ -422,7 +438,7 @@ Some data is only completely hashed upon user interactions (e.g., via callbacks)
 • توکن ربات رمزگذاری‌شده
 
 🔸 <b>سمت کاربر</b>:
-• شناسه کاربر رمزگذاری‌شده (فقط بخشی از هش رمزگذاری‌شده ذخیره می‌شود؛ رمزگشایی زمانی انجام می‌شود که کاربر داده‌های بازخورد را ارائه دهد)
+• شناسه کاربر رمزگذاری‌شده (فقط بخشی از هش رمزگذاری‌شده ذخیره می‌شود؛ رمزگشایی زمانی انجام می‌شود که کاربر داده‌های بازخورد را ارائه دهد)</blockquote>
 
 🔎 <b>چطور داده‌ها را جمع‌آوری می‌کنیم</b>:
 • داده‌ها به صورت امن و مستقیم از سرورهای تلگرام از طریق تعاملات کاربر با ربات ما جمع‌آوری می‌شوند (مثلاً وقتی کاربر پیامی ارسال می‌کند).
@@ -431,6 +447,46 @@ Some data is only completely hashed upon user interactions (e.g., via callbacks)
 🧑‍💻 <b>از داده‌ها برای چه استفاده می‌کنیم</b>:
 • برای ارسال پیام‌ها بین کاربر و ادمین به صورت امن و ناشناس.''',
     )
+
+    ABOUT_COMMAND = Response(
+        en=f'''🤖 <b>About the Bot</b><blockquote expandable>
+This bot is fully open-source, and its source code is available on <a href="{PROJECT_GITHUB_URL}">GitHub</a>.  
+It is designed as a <b>zero-knowledge anonymous messaging solution</b>, meaning that no one - not even the developer - can ever access the identity of users or admins.
+Only the minimal encrypted data required to deliver messages is stored, using the ChaCha20-Poly1305 encryption algorithm for confidentiality and authenticity.
+The encrypted data is split into two independent parts through <b>dual control</b>: one part is stored in the database, while the other is held by the user or admin.
+Both parts must be combined temporarily to decrypt a message - and this combination occurs for each individual message.
+Since the bot is open-source and offers a /safetycheck command, you can verify that what you're using matches the public source code - with no hidden data logging.
+When you use /safetycheck, the bot fetches the currently running source code (it can't be anything else!), then downloads the code from GitHub, hashes both versions, and compares them. If they match (identical), you know for sure there's no trickery involved.
+When you own your bot, you own your data. If you revoke your bot from the bot creator or change your bot token, not even the developer can retrieve it.  
+And while using it? Still impossible - the code (which you can review yourself) simply doesn't have that functionality.</blockquote>
+
+👨🏻‍💻 <b>About the Developer</b>  
+This bot is developed by <a href="https://abditory.vercel.app">Ali Abdi</a>.  
+📬 <a href="{DEVELOPER_CONTACT_URL}">Contact the developer</a> for any questions, suggestions, or issues.  
+📢 You can also join the <a href="https://t.me/TechNila">developer's channel</a> for bot news, tech updates, and science content.  
+
+💙 If you'd like to support the project, you can donate via the TON crypto button below. Your donations help keep the bot free and fund future improvements.
+''',
+        fa=f'''🤖 <b>دربارهٔ ربات</b><blockquote expandable>
+این ربات به‌طور کامل متن‌باز است و کد منبع آن در <a href="{PROJECT_GITHUB_URL}">GitHub</a> در دسترس می‌باشد.
+این ربات به‌عنوان یک <b>راهکار پیام‌رسانی ناشناس با دانش صفر</b> طراحی شده است، به این معنی که هیچ‌کس — حتی توسعه‌دهنده — نمی‌تواند به هویت کاربران یا مدیران دسترسی پیدا کند.
+فقط حداقل داده‌های رمزنگاری شده مورد نیاز برای تحویل پیام‌ها ذخیره می‌شود، که برای حفظ محرمانگی و صحت از الگوریتم رمزنگاری ChaCha20-Poly1305 استفاده می‌شود.
+داده‌های رمزنگاری شده به دو بخش مستقل تقسیم می‌شوند از طریق <b>کنترل دوگانه</b>؛ یک بخش در پایگاه داده ذخیره می‌شود و بخش دیگر نزد کاربر یا مدیر نگه داشته می‌شود.
+برای رمزگشایی هر پیام، هر دو بخش باید به‌صورت موقت ترکیب شوند و این ترکیب فقط برای همان پیام خاص انجام می‌شود.
+از آنجا که ربات متن‌باز است و دستور /safetycheck را ارائه می‌دهد، می‌توانید بررسی کنید که نسخه‌ای که استفاده می‌کنید دقیقاً با کد منبع عمومی مطابقت دارد — بدون هیچ‌گونه ثبت داده مخفی.
+وقتی دستور /safetycheck را اجرا می‌کنید، ربات کد منبع در حال اجرا را می‌گیرد (و نمی‌تواند چیز دیگری باشد!)، سپس کد را از GitHub دانلود می‌کند، هر دو نسخه را هش می‌کند و با هم مقایسه می‌کند. اگر هش‌ها برابر باشند (کاملاً یکسان)، مطمئن باشید هیچ تقلبی وجود ندارد.
+وقتی مالک ربات خود باشید، مالک داده‌های خود نیز هستید. اگر دسترسی ربات را از سازندهٔ آن لغو کنید یا توکن ربات را تغییر دهید، حتی توسعه‌دهنده هم نمی‌تواند به داده‌ها دسترسی پیدا کند.
+و هنگام استفاده؟ همچنان غیرممکن است — کد (که می‌توانید خودتان بررسی کنید) اصلاً چنین قابلیتی ندارد.</blockquote>
+
+👨🏻‍💻 <b>دربارهٔ توسعه‌دهنده</b>
+این ربات توسط <a href="https://abditory.vercel.app">علی عبدی</a> توسعه داده شده است.
+📬 برای هرگونه سؤال، پیشنهاد یا گزارش مشکل می‌توانید از طریق <a href="{DEVELOPER_CONTACT_URL}">ارتباط با توسعه‌دهنده</a> اقدام کنید.
+📢 همچنین می‌توانید به <a href="https://t.me/TechNila">کانال توسعه‌دهنده</a> بپیوندید تا از اخبار ربات، به‌روزرسانی‌های فناوری و محتوای علمی مطلع شوید.
+
+💙 اگر مایل به حمایت از این پروژه هستید، می‌توانید از طریق دکمهٔ رمزارز TON در پایین صفحه کمک مالی کنید. کمک‌های شما به حفظ رایگان بودن ربات و تأمین هزینهٔ بهبودهای آینده کمک خواهد کرد.
+'''
+    )
+
     FETCHING_LOCAL_FILES = Response(
         en='🔄 Fetching and hashing local files...',
         fa='🔄 در حال دریافت و هش کردن فایل‌های محلی...'

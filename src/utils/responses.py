@@ -28,8 +28,8 @@ class ResponseKey(Enum):
         fa="🤖🔒 در حال رمزگذاری پیام شما و آماده‌سازی جهت ارسال..."
     )
     USER_BLOCKED = Response(
-        en="🛑 You have been blocked by the admin.",
-        fa="🛑 ادمین شما را بلاک کرده است."
+        en="🤖🛑 You have been blocked by the admin.",
+        fa="🤖🛑 ادمین شما را بلاک کرده است."
     )
     MESSAGE_SENT_NO_HISTORY = Response(
         en=f"🤖✅ {BTN_EMOJI_NO_HISTORY}\nMessage sent anonymously without history!",
@@ -44,8 +44,8 @@ class ResponseKey(Enum):
         fa=f"🤖✅ {BTN_EMOJI_FORWARD}\nپیام به ادمین فوروارد شد!"
     )
     ERROR_SENDING_MESSAGE = Response(
-        en="⚠️ Error sending message. Please try again.",
-        fa="⚠️ خطا در ارسال پیام. لطفاً دوباره تلاش کنید."
+        en="🤖⚠️ Error sending message. Please try again.",
+        fa="🤖⚠️ خطا در ارسال پیام. لطفاً دوباره تلاش کنید."
     )
     WELCOME = Response(
         en=("Welcome!\n"
@@ -93,10 +93,6 @@ class ResponseKey(Enum):
         en="This bot is already registered!",
         fa="این ربات قبلاً ثبت شده است!"
     )
-    NOT_AUTHORIZED = Response(
-        en="You are not authorized to register bots.",
-        fa="شما مجاز به ثبت ربات نیستید."
-    )
     ADMIN_REGISTERED = Response(
         en="You have been registered as an admin.",
         fa="شما به عنوان ادمین ثبت شده‌اید."
@@ -108,10 +104,6 @@ class ResponseKey(Enum):
         fa=("لطفاً برای لغو دسترسی، به پیام پین‌شده پاسخ دهید.\n"
             "⚠️ توجه داشته باشید که پس از لغو، کاربران تا زمانی که توکن جدید دریافت نکنند، دیگر نمی‌توانند برای شما پیام ارسال کنند!\n"
             "دکمه‌های قدیمی نیز ممکن است کار نکنند.")
-    )
-    NOT_AUTHORIZED_TO_REVOKE = Response(
-        en="You are not authorized to perform this action.",
-        fa="شما مجاز به انجام این عمل نیستید."
     )
     INVALID_PINNED_MESSAGE = Response(
         en="Invalid pinned message format.",
@@ -126,8 +118,8 @@ class ResponseKey(Enum):
         fa="خطا در لغو دسترسی ربات."
     )
     REVOKE_ERROR_DETAIL = Response(
-        en="Error revoking bot access: {error}",
-        fa="خطا در لغو دسترسی ربات: {error}"
+        en="Error revoking bot access:\n<code>{error}</code>",
+        fa="خطا در لغو دسترسی ربات:\n<code>{error}</code>"
     )
     ALREADY_ADMIN = Response(
         en="You are already registered as an admin.",
@@ -145,17 +137,9 @@ class ResponseKey(Enum):
         en="You cannot send a message to yourself; please click the answer button and then reply.",
         fa="شما نمی‌توانید به خودتان پیام ارسال کنید؛ لطفاً روی دکمه پاسخ کلیک کرده و سپس پیام خود را ارسال کنید."
     )
-    MESSAGE_SENT = Response(
-        en="Your message has been sent anonymously to the admin",
-        fa="پیام شما به صورت ناشناس برای ادمین ارسال شد"
-    )
     ERROR_SENDING = Response(
-        en="Error sending your message",
-        fa="خطا در ارسال پیام"
-    )
-    BOT_ERROR = Response(
-        en="Error: No admin found for this bot",
-        fa="خطا: ادمینی برای این ربات پیدا نشد"
+        en="🤖 Error sending your message",
+        fa="🤖 خطا در ارسال پیام"
     )
     ANONYMOUS_INLINEBUTTON1 = Response(
         en=f"{BTN_EMOJI_NO_HISTORY} Anonymous without history",
@@ -358,12 +342,15 @@ class ResponseKey(Enum):
     )
     START_COMMAND = Response(
         en='''👋 Welcome!
-This bot enables secure and anonymous messaging, created by @{BOT_CREATOR_USERNAME}.
-Please use this bot responsibly and kindly.
-The developer or the bot is not responsible for any messages you may receive from anonymous users who have your bot username.
-The developer cannot identify these users.
-Users can communicate with the admin in three different ways:''' + f'''
+This bot offers secure, anonymous messaging, created by @{BOT_CREATOR_USERNAME}.
+Please use it respectfully and kindly.
+The developer isn't responsible for messages from anonymous users and cannot identify them.
+Users can contact the admin in three ways:''' + f'''
+1️⃣ {BTN_EMOJI_NO_HISTORY} <b>Anonymous without history</b>
+2️⃣ {BTN_EMOJI_WITH_HISTORY} <b>Anonymous with history</b>
+3️⃣ {BTN_EMOJI_FORWARD} <b>Forward</b>
 
+<b>Description</b>:<blockquote expandable>
 1️⃣ {BTN_EMOJI_NO_HISTORY} <b>Anonymous without history</b>
 • Each message is sent completely anonymously.
 • The admin cannot identify you or link your messages together.
@@ -377,7 +364,7 @@ Users can communicate with the admin in three different ways:''' + f'''
 3️⃣ {BTN_EMOJI_FORWARD} <b>Forward</b>
 • Your message is forwarded directly to the admin.
 • The admin can view your profile (if <i>Forwarded Messages</i> is set to <i>Everybody</i> in your settings).
-• Suitable for direct communication.
+• Suitable for direct communication.</blockquote>
 
 To start, simply send your message and select your preferred mode.''',
         fa='''👋 خوش آمدید! این ربات امکان ارسال پیام‌های امن و ناشناس را فراهم می‌کند و توسط @{BOT_CREATOR_USERNAME} ایجاد شده است.
@@ -385,7 +372,11 @@ To start, simply send your message and select your preferred mode.''',
 توسعه‌دهنده یا ربات هیچ مسئولیتی در قبال پیام‌هایی که ممکن است از کاربران ناشناس دریافت کنید، ندارد.
 توسعه‌دهنده قادر به شناسایی هویت کاربران نیست.
 به‌عنوانِ کاربر، شما می‌توانید به سه روش مختلف با ادمین ارتباط برقرار کنید:''' + f'''
+1️⃣ {BTN_EMOJI_NO_HISTORY} <b>ناشناس بدون تاریخچه</b>
+2️⃣ {BTN_EMOJI_WITH_HISTORY} <b>ناشناس با تاریخچه</b>
+3️⃣ {BTN_EMOJI_FORWARD} <b>ارسال مستقیم</b>
 
+<b>توضیحات</b>:<blockquote expandable>
 1️⃣ {BTN_EMOJI_NO_HISTORY} <b>ناشناس بدون تاریخچه</b>
 • هر پیام به‌صورت کاملاً ناشناس ارسال خواهد شد.
 • ادمین نمی‌تواند شما را شناسایی کند یا پیام‌های شما را به هم پیوند دهد.
@@ -399,7 +390,7 @@ To start, simply send your message and select your preferred mode.''',
 3️⃣ {BTN_EMOJI_FORWARD} <b>ارسال مستقیم</b>
 • پیام شما مستقیماً به ادمین ارسال می‌شود.
 • ادمین می‌تواند پروفایل شما را مشاهده کند (در صورتی که تنظیمات <i>Forwarded Messages</i> روی <i>Everybody</i> قرار داشته باشد).
-• مناسب برای ارتباط مستقیم.
+• مناسب برای ارتباط مستقیم.</blockquote>
 
 برای شروع، کافی است پیام خود را ارسال کرده و روش دلخواه خود را انتخاب کنید.'''
     )
@@ -442,7 +433,7 @@ Some data is only completely hashed upon user interactions (e.g., via callbacks)
 
 🔎 <b>چطور داده‌ها را جمع‌آوری می‌کنیم</b>:
 • داده‌ها به صورت امن و مستقیم از سرورهای تلگرام از طریق تعاملات کاربر با ربات ما جمع‌آوری می‌شوند (مثلاً وقتی کاربر پیامی ارسال می‌کند).
-• داده‌ها رمزگذاری شده و به دو بخش تقسیم می‌شوند: یک بخش در پایگاه داده ذخیره می‌شود و بخش دیگر توسط کاربر ارائه می‌شود. بدون بخش ارائه‌شده، رمزگشایی غیرممکن است.\n\n
+• داده‌ها رمزگذاری شده و به دو بخش تقسیم می‌شوند: یک بخش در پایگاه داده ذخیره می‌شود و بخش دیگر توسط کاربر ارائه می‌شود. بدون بخش ارائه‌شده، رمزگشایی غیرممکن است.
 
 🧑‍💻 <b>از داده‌ها برای چه استفاده می‌کنیم</b>:
 • برای ارسال پیام‌ها بین کاربر و ادمین به صورت امن و ناشناس.''',
@@ -469,14 +460,14 @@ This bot is developed by <a href="https://abditory.vercel.app">Ali Abdi</a>.
 ''',
         fa=f'''🤖 <b>دربارهٔ ربات</b><blockquote expandable>
 این ربات به‌طور کامل متن‌باز است و کد منبع آن در <a href="{PROJECT_GITHUB_URL}">GitHub</a> در دسترس می‌باشد.
-این ربات به‌عنوان یک <b>راهکار پیام‌رسانی ناشناس با دانش صفر</b> طراحی شده است، به این معنی که هیچ‌کس — حتی توسعه‌دهنده — نمی‌تواند به هویت کاربران یا مدیران دسترسی پیدا کند.
+این ربات به‌عنوان یک <b>راهکار پیام‌رسانی ناشناس با دانش صفر</b> طراحی شده است، به این معنی که هیچ‌کس - حتی توسعه‌دهنده - نمی‌تواند به هویت کاربران یا مدیران دسترسی پیدا کند.
 فقط حداقل داده‌های رمزنگاری شده مورد نیاز برای تحویل پیام‌ها ذخیره می‌شود، که برای حفظ محرمانگی و صحت از الگوریتم رمزنگاری ChaCha20-Poly1305 استفاده می‌شود.
 داده‌های رمزنگاری شده به دو بخش مستقل تقسیم می‌شوند از طریق <b>کنترل دوگانه</b>؛ یک بخش در پایگاه داده ذخیره می‌شود و بخش دیگر نزد کاربر یا مدیر نگه داشته می‌شود.
 برای رمزگشایی هر پیام، هر دو بخش باید به‌صورت موقت ترکیب شوند و این ترکیب فقط برای همان پیام خاص انجام می‌شود.
-از آنجا که ربات متن‌باز است و دستور /safetycheck را ارائه می‌دهد، می‌توانید بررسی کنید که نسخه‌ای که استفاده می‌کنید دقیقاً با کد منبع عمومی مطابقت دارد — بدون هیچ‌گونه ثبت داده مخفی.
+از آنجا که ربات متن‌باز است و دستور /safetycheck را ارائه می‌دهد، می‌توانید بررسی کنید که نسخه‌ای که استفاده می‌کنید دقیقاً با کد منبع عمومی مطابقت دارد - بدون هیچ‌گونه ثبت داده مخفی.
 وقتی دستور /safetycheck را اجرا می‌کنید، ربات کد منبع در حال اجرا را می‌گیرد (و نمی‌تواند چیز دیگری باشد!)، سپس کد را از GitHub دانلود می‌کند، هر دو نسخه را هش می‌کند و با هم مقایسه می‌کند. اگر هش‌ها برابر باشند (کاملاً یکسان)، مطمئن باشید هیچ تقلبی وجود ندارد.
 وقتی مالک ربات خود باشید، مالک داده‌های خود نیز هستید. اگر دسترسی ربات را از سازندهٔ آن لغو کنید یا توکن ربات را تغییر دهید، حتی توسعه‌دهنده هم نمی‌تواند به داده‌ها دسترسی پیدا کند.
-و هنگام استفاده؟ همچنان غیرممکن است — کد (که می‌توانید خودتان بررسی کنید) اصلاً چنین قابلیتی ندارد.</blockquote>
+و هنگام استفاده؟ همچنان غیرممکن است - کد (که می‌توانید خودتان بررسی کنید) اصلاً چنین قابلیتی ندارد.</blockquote>
 
 👨🏻‍💻 <b>دربارهٔ توسعه‌دهنده</b>
 این ربات توسط <a href="https://abditory.vercel.app">علی عبدی</a> توسعه داده شده است.
@@ -489,27 +480,27 @@ This bot is developed by <a href="https://abditory.vercel.app">Ali Abdi</a>.
 
     FETCHING_LOCAL_FILES = Response(
         en='🔄 Fetching and hashing local files...',
-        fa='🔄 در حال دریافت و هش کردن فایل‌های محلی...'
+        fa='🔄 در حال دریافت و هَش‌کردن فایل‌های محلی...'
     )
 
     LOCAL_FILES_HASHED = Response(
         en='✅ Local files hashed: <b>{0}</b>',
-        fa='✅ فایل‌های محلی هش شدند: <b>{0}</b>'
+        fa='✅ فایل‌های محلی هَش شدند: <b>{0}</b>'
     )
 
     FETCHING_GITHUB_FILES = Response(
         en='🔄 Fetching and hashing GitHub files...',
-        fa='🔄 در حال دریافت و هش کردن فایل‌های گیت‌هاب...'
+        fa='🔄 در حال دریافت و هَش‌کردن فایل‌های گیت‌هاب...'
     )
 
     GITHUB_FILES_HASHED = Response(
         en='✅ <b><a href="{PROJECT_GITHUB_URL}">GitHub</a></b> files hashed: <b>{number}</b>',
-        fa='✅ فایل‌های <b><a href="{PROJECT_GITHUB_URL}">گیت‌هاب</a></b> هش شدند: <b>{number}</b>'
+        fa='✅ فایل‌های <b><a href="{PROJECT_GITHUB_URL}">گیت‌هاب</a></b> هَش شدند: <b>{number}</b>'
     )
 
     SOURCE_IDENTICAL = Response(
-        en='✅ The local source code is IDENTICAL to GitHub!',
-        fa='✅ کد منبع محلی با گیت‌هاب یکسان است!'
+        en='✅ The local source code is <b>IDENTICAL</b> to GitHub!',
+        fa='✅ کد منبع محلی با گیت‌هاب <b>یکسان</b> است!'
     )
 
     SOURCE_DIFFERS = Response(
@@ -519,7 +510,7 @@ This bot is developed by <a href="https://abditory.vercel.app">Ali Abdi</a>.
 
     EXTRA_FILE = Response(
         en='🛑 Extra file: <b>{0}</b>',
-        fa='🛑 فایل اضافی: <b>{0}</b>'
+        fa='🛑 فایل اضافه: <b>{0}</b>'
     )
 
     MODIFIED_FILE = Response(

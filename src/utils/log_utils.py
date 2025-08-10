@@ -4,6 +4,7 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 from typing import Dict
 from configs.settings import LOG_FILENAME, LOGGER_TIMEZONE, LOGGER_STREAM_LEVEL, LOGGER_FILE_LEVEL
+from utils.helpers import shorten_token
 
 # Log messages with emojis for better visibility
 log_messages: Dict[str, str] = {
@@ -86,3 +87,31 @@ def setup_logging():
     file_logging.setLevel(FILE_LEVEL)
     file_logging.setFormatter(logging.Formatter(file_logging_format, logging_date_format))
     logger.addHandler(file_logging)
+
+class WebhookLogFilter(logging.Filter):
+    """A custom logging filter to sanitize bot tokens from webhook URLs."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == 'uvicorn.access' and record.args and len(record.args) >= 5:
+            path = record.args[2]
+
+            # ADD THIS TYPE CHECK to ensure 'path' is a string
+            if isinstance(path, str) and path.startswith("/webhook/"):
+                token = path.split('/')[2]
+                sanitized_path = f"/webhook/{shorten_token(token)}"
+                
+                args = list(record.args)
+                args[2] = sanitized_path
+                record.args = tuple(args)
+        
+        return True
+
+
+def patch_uvicorn_logging():
+    """
+    Finds the Uvicorn access logger and adds our security filter to it.
+    """
+    # Get ONLY the logger that handles access messages
+    uvicorn_access_logger = logging.getLogger("uvicorn.access")
+    
+    # Add our custom filter to it
+    uvicorn_access_logger.addFilter(WebhookLogFilter())

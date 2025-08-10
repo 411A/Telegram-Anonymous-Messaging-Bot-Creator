@@ -15,7 +15,7 @@ from utils.db_utils import DatabaseManager, Encryptor, AdminManager
 from utils.secure_config import get_encryption_key
 from handlers.anonymous_handler import handle_messages, handle_anonymous_callback, handle_read_callback, handle_admin_callback
 from utils.responses import get_response, ResponseKey
-from utils.log_utils import setup_logging
+from utils.log_utils import setup_logging, patch_uvicorn_logging
 from utils.github_checker import (
     GitHubChecker,
     DIFFERENCES_FILE_NAME,
@@ -52,6 +52,9 @@ from collections import defaultdict
 
 # Initialize logging when module is imported
 setup_logging()
+# Patch uvicorn logging to sanitize bot tokens
+patch_uvicorn_logging()
+
 logger = logging.getLogger(__name__)
 
 MAIN_BOT_USERNAME = None

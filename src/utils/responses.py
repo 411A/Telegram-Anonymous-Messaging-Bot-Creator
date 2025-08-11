@@ -23,6 +23,10 @@ class ResponseKey(Enum):
         en="⏳ Please wait while the bot is being registered...",
         fa="⏳ لطفاً منتظر بمانید تا ربات ثبت شود..."
     )
+    USER_ERROR_ORIGINAL_MESSAGE_DELETED = Response(
+        en="🤖🚮 You deleted the message you want to send! Please send another message and do not delete it.",
+        fa="🤖🚮 شما پیامی که می‌خواستید ارسال کنید را حذف کردید! لطفاً پیام دیگری ارسال کنید و آن را حذف نکنید."
+    )
     ENCRYPTING_MESSAGE = Response(
         en="🤖🔒 Encrypting your message and preparing it for sending...",
         fa="🤖🔒 در حال رمزگذاری پیام شما و آماده‌سازی جهت ارسال..."

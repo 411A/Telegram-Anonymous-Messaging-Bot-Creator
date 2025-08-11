@@ -310,7 +310,7 @@ async def create_and_configure_bot(token: str) -> Application:
         webhook_url = f'{WEBHOOK_BASE_URL}/webhook/{token}'
         webhook_info = await new_bot.get_webhook_info()
     except Exception as e:
-        logger.error(f"Failed to initialize bot {short_token}: {str(e)}")
+        logger.exception(f"Failed to initialize bot {short_token}:\n{str(e)}")
         raise
 
     try:

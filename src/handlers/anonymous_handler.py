@@ -465,8 +465,11 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 # Clean up the reply state from cache on error
                 await admins_reply_cache.remove(user_id)
         else:
-            # Inform admin to use the Answer button
-            await update.message.reply_text(get_response(ResponseKey.ADMIN_MUST_USE_ANSWER_BUTTON, user_lang), parse_mode=ParseMode.HTML)
+            try:
+                # Inform admin to use the Answer button
+                await update.message.reply_text(get_response(ResponseKey.ADMIN_MUST_USE_ANSWER_BUTTON, user_lang), parse_mode=ParseMode.HTML)
+            except Exception as e:
+                logger.exception(f"Failed to inform admin about reply context, blocked its bot or am I in a group without right permissions?!:\n{str(e)}")
         return
 
     # Check if user is blocked
@@ -508,11 +511,17 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     query_data = query.data
     user_lang = check_language_availability(query.from_user.language_code)
-    
-    # Show encryption status message to user
-    await query.message.edit_text(get_response(ResponseKey.ENCRYPTING_MESSAGE, user_lang))
 
     original_sender_message: Message = query.message.reply_to_message
+    
+    # Check if the original message still exists
+    if not original_sender_message:
+        await query.message.edit_text(get_response(ResponseKey.ERROR_ORIGINAL_MESSAGE_DELETED, user_lang))
+        logger.warning("User tried to use a callback for a deleted message.")
+        return
+
+    # Show encryption status message to user
+    await query.message.edit_text(get_response(ResponseKey.ENCRYPTING_MESSAGE, user_lang))
 
     # 1. Get the option (remove 'SendAnon_' prefix)
     option = query.data.replace(f'SendAnon{SEP}', '')
@@ -523,7 +532,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     # 3. Get sender's user_id
     sender_user_id = query.from_user.id
     # 4. Get original message_id
-    original_message_id = query.message.reply_to_message.message_id
+    original_message_id = original_sender_message.message_id
     # 5. Get Unix timestamp with nanoseconds
     timestamp_ns = time.time_ns()
     # Construct the callback string for read callback

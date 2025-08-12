@@ -2,6 +2,7 @@ from telegram import Update, CallbackQuery
 from telegram.ext import ContextTypes
 from telegram import Message, InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji
 from telegram.constants import ParseMode
+from telegram.error import Forbidden
 from utils.responses import get_response, ResponseKey
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
 from utils.helpers import generate_anonymous_id, check_language_availability
@@ -421,12 +422,24 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     if not target_user_id or not original_message_id:
                         raise ValueError("Invalid target_user_id or original_message_id")
                     
-                    # Send the admin's reply to the target user
-                    await update.message.copy(
-                        chat_id=target_user_id,
-                        reply_to_message_id=original_message_id,
-                        reply_markup=user_markup
-                    )
+                    try:
+                        # Send the admin's reply to the target user
+                        await update.message.copy(
+                            chat_id=target_user_id,
+                            reply_to_message_id=original_message_id,
+                            reply_markup=user_markup
+                        )
+                    except Forbidden as forbidden_error:
+                        # Handle case where the bot is blocked by the user
+                        logger.error("Bot is blocked by user. Cannot send reply.")
+                        await update.message.reply_text(
+                            text=get_response(ResponseKey.ADMIN_REPLY_FAILED_USER_BLOCKED_BOT, user_lang),
+                            quote=True,
+                            parse_mode=ParseMode.HTML
+                        )
+                        # Clean up the reply state from cache
+                        await admins_reply_cache.remove(user_id)
+                        return
 
                     # Handle the wait message
                     wait_msg: Message | None = admin_reply_state.get('wait_msg')

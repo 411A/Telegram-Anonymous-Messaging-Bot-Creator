@@ -206,12 +206,16 @@ class ResponseKey(Enum):
         fa="❌ برای پاسخ به پیام‌ها باید از دکمه پاسخ استفاده کنید."
     )
     ADMIN_REPLY_SENT = Response(
-        en="✅ Reply sent successfully!",
-        fa="✅ پاسخ با موفقیت ارسال شد!"
+        en="🤖✅ Reply sent successfully!",
+        fa="🤖✅ پاسخ با موفقیت ارسال شد!"
     )
     ADMIN_REPLY_FAILED = Response(
-        en="❌ Failed to send reply!",
-        fa="❌ ارسال پاسخ ناموفق بود!"
+        en="🤖❌ Failed to send reply!",
+        fa="🤖❌ ارسال پاسخ ناموفق بود!"
+    )
+    ADMIN_REPLY_FAILED_USER_BLOCKED_BOT = Response(
+        en="🤖❌ Failed to send reply!\nUser is blocked the bot.",
+        fa="🤖❌ ارسال پاسخ ناموفق بود!\nکاربر موردنظر، ربات را بلاک کرده است."
     )
     ADMIN_USER_BLOCKED = Response(
         en=f"{BTN_EMOJI_BLOCK} User blocked successfully!",

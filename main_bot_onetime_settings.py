@@ -1,11 +1,11 @@
 import aiohttp
 import asyncio
-from src.utils.responses import ResponseKey
+from src.utils.responses import ResponseKey, CommandKey
 from src.configs.settings import MAIN_BOT_TOKEN
 
 
 # Configuration using ResponseKey Enum
-MAIN_BOT_COMMANDS = ResponseKey.MAIN_BOT_COMMANDS
+MAIN_BOT_COMMANDS = CommandKey.MAIN_BOT_COMMANDS
 BOT_NAME = ResponseKey.BOT_NAME
 BOT_SHORT_DESCRIPTION = ResponseKey.BOT_SHORT_DESCRIPTION
 BOT_DESCRIPTION = ResponseKey.BOT_DESCRIPTION

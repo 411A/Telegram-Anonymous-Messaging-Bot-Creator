@@ -10,11 +10,11 @@ from telegram.ext import (
     MessageHandler, CallbackQueryHandler, filters
 )
 from telegram.constants import ParseMode
-from typing import Dict, List
+from typing import Dict, List, Optional
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
 from utils.secure_config import get_encryption_key
 from handlers.anonymous_handler import handle_messages, handle_anonymous_callback, handle_read_callback, handle_admin_callback
-from utils.responses import get_response, ResponseKey
+from utils.responses import get_response, ResponseKey, get_commands, CommandKey
 from utils.log_utils import setup_logging, patch_uvicorn_logging
 from utils.github_checker import (
     GitHubChecker,
@@ -86,12 +86,12 @@ async def cleanup_application(token: str, application: Application):
         if "not running" in str(e):
             logger.info(f"Bot {short_token} is already stopped.")
         else:
-            logger.exception(f"Error stopping bot {short_token}: {e}")
+            logger.exception(f"Error stopping bot {short_token}:\n{e}")
     try:
         await application.shutdown()
         logger.info(f"Cleaned up bot {short_token} due to cache eviction.")
     except Exception as e:
-        logger.exception(f"Error shutting down bot {short_token} on eviction: {e}")
+        logger.exception(f"Error shutting down bot {short_token} on eviction:\n{e}")
 
 # Global LRU cache to store active bot applications.
 active_bots = ApplicationLRUCache(maxsize=MAX_IN_MEMORY_ACTIVE_BOTS, on_evicted=cleanup_application)
@@ -102,23 +102,39 @@ app_creation_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 security = HTTPBearer()
 
 # Global variables to be initialized in the lifespan context
-db_manager: DatabaseManager = None
-encryptor: Encryptor = None
-admin_manager: AdminManager = None
+db_manager: Optional[DatabaseManager] = None
+encryptor: Optional[Encryptor] = None
+admin_manager: Optional[AdminManager] = None
 
 async def main_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_lang = check_language_availability(update.message.from_user.language_code)
-    await update.message.reply_text(get_response(ResponseKey.WELCOME, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    message = update.effective_message
+    if not message:
+        logger.info(f"main_start: No effective message ({message}), returning")
+        return
+    user = update.effective_user
+    if not user:
+        logger.info(f"main_start: No effective user ({user}), returning")
+        return
+    user_lang = check_language_availability(user.language_code or 'en')
+    await message.reply_text(get_response(ResponseKey.WELCOME, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 async def main_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_lang = check_language_availability(update.message.from_user.language_code)
+    message = update.effective_message
+    if not message:
+        logger.info(f"main_about: No effective message ({message}), returning")
+        return
+    user = update.effective_user
+    if not user:
+        logger.info(f"main_about: No effective user ({user}), returning")
+        return
+    user_lang = check_language_availability(user.language_code or 'en')
     if user_lang == "fa":
         button_text = "💎 هدیه رمزارز TON به توسعه‌دهنده"
     else:
         button_text = "💎 Donate TON"
     keyboard = [[InlineKeyboardButton(button_text, url="ton://transfer/TechKraken.ton")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
+    await message.reply_text(
         get_response(
             ResponseKey.ABOUT_COMMAND,
             user_lang,
@@ -131,16 +147,36 @@ async def main_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global MAIN_BOT_USERNAME
-    user_lang = check_language_availability(update.message.from_user.language_code)
-    await update.message.reply_text(get_response(ResponseKey.START_COMMAND, user_lang, BOT_CREATOR_USERNAME=MAIN_BOT_USERNAME), parse_mode=ParseMode.HTML)
+    message = update.effective_message
+    if not message:
+        logger.info(f"start: No effective message ({message}), returning")
+        return
+    user = update.effective_user
+    if not user:
+        logger.info(f"start: No effective user ({user}), returning")
+        return
+    user_lang = check_language_availability(user.language_code or 'en')
+    await message.reply_text(get_response(ResponseKey.START_COMMAND, user_lang, BOT_CREATOR_USERNAME=MAIN_BOT_USERNAME), parse_mode=ParseMode.HTML)
 
 async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_lang = check_language_availability(update.message.from_user.language_code)
-    await update.message.reply_text(get_response(ResponseKey.PRIVACY_COMMAND, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True, quote=True)
+    message = update.effective_message
+    if not message:
+        logger.info(f"privacy: No effective message ({message}), returning")
+        return
+    user = update.effective_user
+    if not user:
+        logger.info(f"privacy: No effective user ({user}), returning")
+        return
+    user_lang = check_language_availability(user.language_code or 'en')
+    await message.reply_text(get_response(ResponseKey.PRIVACY_COMMAND, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True, quote=True)
 
 async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global GITHUB_CHECK_RESULTS, RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME
-    user_lang = check_language_availability(update.message.from_user.language_code)
+    user = update.effective_user
+    if not user:
+        logger.info(f"safetycheck: No effective user ({user}), returning")
+        return
+    user_lang = check_language_availability(user.language_code or 'en')
 
     if user_lang not in GITHUB_CHECK_RESULTS:
         checker = GitHubChecker(
@@ -178,22 +214,24 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 GITHUB_CHECK_RESULTS=current_results
             )
         except Exception as e:
-            logger.error(f"Error formatting safety check caption: {e}")
+            logger.error(f"Error formatting safety check caption:\n{e}")
             raise ValueError("Failed to format safety check results")
 
         # Get the filename of the currently running script
         try:
             running_script_filename = Path(__file__).name
         except Exception as e:
-            logger.error(f"Error getting script filename: {e}")
+            logger.error(f"Error getting script filename:\n{e}")
             running_script_filename = "bot_creator.py"
 
         # Create a new BytesIO instance from the cached file content
         try:
+            if RUNNING_SCRIPT_DATA is None:
+                raise ValueError("Running script data not loaded")
             main_file_to_send = io.BytesIO(RUNNING_SCRIPT_DATA)
             main_file_to_send.name = running_script_filename
         except Exception as e:
-            logger.error(f"Error preparing file data: {e}")
+            logger.error(f"Error preparing file data:\n{e}")
             raise ValueError("Failed to prepare script file data")
 
         # Prepare the .md differences file using aiofiles
@@ -203,7 +241,7 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 diff_file_data = io.BytesIO(await diff_file.read())
                 diff_file_data.name = str(DIFFERENCES_FILE_NAME.name)
         except Exception as e:
-            logger.error(f"Error reading diff file: {e}")
+            logger.error(f"Error reading diff file:\n{e}")
             raise ValueError("Failed to prepare diff file data")
 
         # Create a media group (album) to send both files in one message
@@ -218,7 +256,7 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 github_checker_file.name = str(GITHUB_CHECKER_FILENAME.name)
                 media_group.append(InputMediaDocument(media=github_checker_file, filename=str(GITHUB_CHECKER_FILENAME.name)))
         except Exception as e:
-            logger.error(f"Error preparing GitHub checker data file: {e}")
+            logger.error(f"Error preparing GitHub checker data file:\n{e}")
             logger.warning("Continuing without GitHub checker data file")
         
         # Only add differences file if there are actual differences
@@ -230,13 +268,16 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     diff_file_data.name = str(DIFFERENCES_FILE_NAME.name)
                 media_group.append(InputMediaDocument(media=diff_file_data, filename=str(DIFFERENCES_FILE_NAME.name)))
         except Exception as e:
-            logger.error(f"Error reading diff file: {e}")
+            logger.error(f"Error reading diff file:\n{e}")
             # Continue without differences file rather than failing completely
             logger.warning("Continuing without differences file")
 
         # Send media group (both documents together)
         try:
-            media_msgs = await update.message.reply_media_group(
+            message = update.effective_message
+            if not message:
+                raise ValueError("No message to reply to")
+            media_msgs = await message.reply_media_group(
                 media=media_group,
                 quote=True
             )
@@ -250,20 +291,24 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.exception(f"Error sending safety check documents:\n{e}")
-            await update.message.reply_text(
-                get_response(ResponseKey.SAFETYCHECK_ERROR, user_lang),
-                quote=True
-            )
+            message = update.effective_message
+            if message:
+                await message.reply_text(
+                    get_response(ResponseKey.SAFETYCHECK_ERROR, user_lang),
+                    quote=True
+                )
 
     except Exception as e:
-        logger.error(f"Safety check failed: {e}")
-        try:
-            await update.message.reply_text(
-                get_response(ResponseKey.SAFETYCHECK_FAILED, user_lang),
-                quote=True
-            )
-        except Exception as send_error:
-            logger.error(f"Failed to send error message: {send_error}")
+        logger.error(f"Safety check failed:\n{e}")
+        message = update.effective_message
+        if message:
+            try:
+                await message.reply_text(
+                    get_response(ResponseKey.SAFETYCHECK_FAILED, user_lang),
+                    quote=True
+                )
+            except Exception as send_error:
+                logger.error(f"Failed to send error message:\n{send_error}")
 
 async def configure_bot_interface(bot: Bot, bot_username: str):
     """Configure bot settings including description and commands."""
@@ -279,15 +324,15 @@ async def configure_bot_interface(bot: Bot, bot_username: str):
         )
         
         # Set bot commands with proper language code
-        en_commands = get_response(ResponseKey.CREATED_BOT_COMMANDS, 'en')
-        fa_commands = get_response(ResponseKey.CREATED_BOT_COMMANDS, 'fa')
+        en_commands = get_commands(CommandKey.CREATED_BOT_COMMANDS, 'en')
+        fa_commands = get_commands(CommandKey.CREATED_BOT_COMMANDS, 'fa')
         en_bot_commands = [BotCommand(command=cmd['command'], description=cmd['description']) for cmd in en_commands]
         fa_bot_commands = [BotCommand(command=cmd['command'], description=cmd['description']) for cmd in fa_commands]
         await bot.set_my_commands(commands=en_bot_commands, language_code='en')
         await bot.set_my_commands(commands=fa_bot_commands, language_code='fa')
         return True
     except Exception as e:
-        logger.exception(f"Error configuring bot interface: {str(e)}")
+        logger.exception(f"Error configuring bot interface:\n{str(e)}")
         raise
 
 async def create_and_configure_bot(token: str) -> Application:
@@ -299,7 +344,6 @@ async def create_and_configure_bot(token: str) -> Application:
             Application.builder()
             .token(token)
             .concurrent_updates(10)
-            .persistence(None)
             .build()
         )
         # Get bot instance
@@ -323,12 +367,13 @@ async def create_and_configure_bot(token: str) -> Application:
                 secret_token=TG_SECRET_TOKEN,
             )
             # Configure bot settings immediately after creation
+            assert bot_username is not None
             await configure_bot_interface(new_bot, bot_username)
             logger.info(f'Set new webhook for bot {short_token}')
         else:
             logger.info(f'Webhook already correctly configured for bot {short_token}')
     except Exception as e:
-        logger.error(f"Failed to configure webhook for bot {short_token}: {str(e)}")
+        logger.error(f"Failed to configure webhook for bot {short_token}:\n{str(e)}")
         raise
 
     application.add_handler(CommandHandler('start', start))
@@ -362,30 +407,44 @@ async def revoke_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update (Update): The update containing the command.
         context (ContextTypes.DEFAULT_TYPE): The context object.
     """
+    message = update.effective_message
+    if not message:
+        logger.info(f"revoke_bot: No effective message ({message}), returning")
+        return
     chat = update.effective_chat
-    user_lang = update.message.from_user.language_code or 'en'
+    if not chat:
+        logger.info(f"revoke_bot: No effective chat ({chat}), returning")
+        return
+    user = update.effective_user
+    if not user:
+        logger.info(f"revoke_bot: No effective user ({user}), returning")
+        return
+    user_lang = check_language_availability(user.language_code or 'en')
 
     # Retrieve the latest chat info which includes the pinned message.
     chat_info = await context.bot.get_chat(chat.id)
 
     # Check if the command is used as a reply to a pinned message.
-    if not update.message.reply_to_message or not (
-        chat_info.pinned_message and chat_info.pinned_message.message_id == update.message.reply_to_message.message_id
+    if not message.reply_to_message or not (
+        chat_info.pinned_message and chat_info.pinned_message.message_id == message.reply_to_message.message_id
     ):
-        await update.message.reply_text(get_response(ResponseKey.REVOKE_INSTRUCTIONS, user_lang), quote=True, parse_mode=ParseMode.HTML)
+        await message.reply_text(get_response(ResponseKey.REVOKE_INSTRUCTIONS, user_lang), quote=True, parse_mode=ParseMode.HTML)
+        logger.info(f"revoke_bot: Command not used as reply to pinned message ({message.reply_to_message}), returning")
         return
 
     try:
         # Get the token from the pinned message.
-        pinned_msg = update.message.reply_to_message
-        if 'Token:' not in pinned_msg.text:
-            await update.message.reply_text(get_response(ResponseKey.INVALID_PINNED_MESSAGE, user_lang), quote=True, parse_mode=ParseMode.HTML)
+        pinned_msg = message.reply_to_message
+        if not pinned_msg or not pinned_msg.text or 'Token:' not in pinned_msg.text:
+            await message.reply_text(get_response(ResponseKey.INVALID_PINNED_MESSAGE, user_lang), quote=True, parse_mode=ParseMode.HTML)
+            logger.info(f"revoke_bot: Invalid pinned message ({pinned_msg}), returning")
             return
 
         raw_token = pinned_msg.text.split('Token:')[1].strip()
         token = extract_bot_token(raw_token)
         if not token:
-            await update.message.reply_text(get_response(ResponseKey.INVALID_TOKEN, user_lang), quote=True, parse_mode=ParseMode.HTML)
+            await message.reply_text(get_response(ResponseKey.INVALID_TOKEN, user_lang), quote=True, parse_mode=ParseMode.HTML)
+            logger.info(f"revoke_bot: Invalid token extracted ({raw_token}), returning")
             return
 
         short_token = shorten_token(token)
@@ -402,48 +461,63 @@ async def revoke_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 del active_bots[token]
                 logger.info(f"Successfully stopped bot {short_token}")
             except Exception as e:
-                logger.error(f"Error stopping bot {short_token}: {str(e)}")
+                logger.error(f"Error stopping bot {short_token}:\n{str(e)}")
                 raise
 
         # Remove bot_token entry from database.
+        assert encryptor is not None
         encrypted_bot_token = encryptor.encrypt(token, deterministic=True)
+        assert db_manager is not None
         if await db_manager.remove_bot_entry(encrypted_bot_token):
             await pinned_msg.unpin()
-            await update.message.reply_text(get_response(ResponseKey.REVOKE_SUCCESS, user_lang), quote=True, parse_mode=ParseMode.HTML)
+            await message.reply_text(get_response(ResponseKey.REVOKE_SUCCESS, user_lang), quote=True, parse_mode=ParseMode.HTML)
         else:
-            await update.message.reply_text(get_response(ResponseKey.REVOKE_ERROR, user_lang), quote=True, parse_mode=ParseMode.HTML)
+            await message.reply_text(get_response(ResponseKey.REVOKE_ERROR, user_lang), quote=True, parse_mode=ParseMode.HTML)
 
     except Exception as e:
         logger.exception(f"Error revoking bot:\n{e}")
-        await update.message.reply_text(get_response(ResponseKey.REVOKE_ERROR_DETAIL, user_lang, error=str(e)), quote=True, parse_mode=ParseMode.HTML)
+        await message.reply_text(get_response(ResponseKey.REVOKE_ERROR_DETAIL, user_lang, error=str(e)), quote=True, parse_mode=ParseMode.HTML)
 
 async def register_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_lang = check_language_availability(update.message.from_user.language_code)
+    message = update.effective_message
+    if not message:
+        logger.info(f"register_bot: No effective message ({message}), returning")
+        return
+    user = update.effective_user
+    if not user:
+        logger.info(f"register_bot: No effective user ({user}), returning")
+        return
+    user_lang = check_language_availability(user.language_code or 'en')
     if not context.args:
-        await update.message.reply_text(get_response(ResponseKey.PROVIDE_TOKEN, user_lang), quote=True, parse_mode=ParseMode.HTML)
+        await message.reply_text(get_response(ResponseKey.PROVIDE_TOKEN, user_lang), quote=True, parse_mode=ParseMode.HTML)
+        logger.info(f"register_bot: No arguments provided ({context.args}), returning")
         return
 
     # Extract token using regex
     token = extract_bot_token(context.args[0])
     if not token:
-        await update.message.reply_text(get_response(ResponseKey.INVALID_TOKEN), quote=True, parse_mode=ParseMode.HTML)
+        await message.reply_text(get_response(ResponseKey.INVALID_TOKEN), quote=True, parse_mode=ParseMode.HTML)
+        logger.info(f"register_bot: Invalid token ({context.args[0]}), returning")
         return
 
     if token in active_bots:
-        await update.message.reply_text(get_response(ResponseKey.ALREADY_REGISTERED), quote=True, parse_mode=ParseMode.HTML)
+        await message.reply_text(get_response(ResponseKey.ALREADY_REGISTERED), quote=True, parse_mode=ParseMode.HTML)
+        logger.info("register_bot: Token already registered, returning")
         return
 
-    user_id = update.effective_user.id
+    user_id = user.id
 
+    progress_message = None
     try:
         # Send initial progress message
-        progress_message = await update.message.reply_text(get_response(ResponseKey.WAIT_REGISTERING_BOT, user_lang), quote=True, parse_mode=ParseMode.HTML)
+        progress_message = await message.reply_text(get_response(ResponseKey.WAIT_REGISTERING_BOT, user_lang), quote=True, parse_mode=ParseMode.HTML)
         
         application = await create_and_configure_bot(token)
         new_bot = application.bot
         bot_info = await new_bot.get_me()
         bot_username = bot_info.username
 
+        assert admin_manager is not None
         if await admin_manager.add_admin(token, bot_username, user_id):
             # Update progress message to show success
             await progress_message.edit_text(get_response(ResponseKey.ADMIN_REGISTERED))
@@ -452,7 +526,7 @@ async def register_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         active_bots[token] = application
 
-        registration_message = await update.message.reply_text(
+        registration_message = await message.reply_text(
             text=get_response(ResponseKey.BOT_REGISTERED_SUCCESS, user_lang, username=bot_username, token=token),
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(
@@ -466,10 +540,10 @@ async def register_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.exception(f"Error registering bot:\n{e}")
-        if 'progress_message' in locals():
+        if progress_message:
             await progress_message.edit_text(f'Error registering bot:\n{str(e)}')
         else:
-            await update.message.reply_text(f'Error registering bot:\n{str(e)}', parse_mode=ParseMode.HTML)
+            await message.reply_text(f'Error registering bot:\n{str(e)}', parse_mode=ParseMode.HTML)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -485,7 +559,7 @@ async def lifespan(app: FastAPI):
                 RUNNING_SCRIPT_DATA = f.read()
             logger.debug(f"Successfully read {len(RUNNING_SCRIPT_DATA)} bytes")
         except Exception as e:
-            logger.exception(f"File read error: {str(e)}")
+            logger.exception(f"File read error:\n{str(e)}")
             RUNNING_SCRIPT_DATA = None 
 
     if GITHUB_CHECKER_DATA is None:
@@ -496,12 +570,18 @@ async def lifespan(app: FastAPI):
                 GITHUB_CHECKER_DATA = await f.read()
             logger.debug(f"Successfully read GitHub checker data, {len(GITHUB_CHECKER_DATA)} bytes")
         except Exception as e:
-            logger.exception(f"GitHub checker data file read error: {str(e)}")
+            logger.exception(f"GitHub checker data file read error:\n{str(e)}")
             GITHUB_CHECKER_DATA = None
 
     db_manager = DatabaseManager()
-    encryptor = Encryptor(get_encryption_key())
+    encryption_key = get_encryption_key()
+    if encryption_key is None:
+        raise ValueError("Encryption key not found")
+    encryptor = Encryptor(encryption_key)
     admin_manager = AdminManager(db_manager, encryptor)
+
+    # Ensure MAIN_BOT_TOKEN is not None
+    assert MAIN_BOT_TOKEN is not None, "MAIN_BOT_TOKEN must be set"
 
     # Initialize main bot with proper handlers
     main_app = Application.builder().token(MAIN_BOT_TOKEN).build()
@@ -541,7 +621,7 @@ async def lifespan(app: FastAPI):
         yield
 
     except Exception as e:
-        logger.exception(f'Error during startup: {str(e)}')
+        logger.exception(f'Error during startup:\n{str(e)}')
         yield
     finally:
         # Cleanup in finally block to ensure it runs even after errors
@@ -553,7 +633,7 @@ async def lifespan(app: FastAPI):
                 await bot.shutdown()
                 logger.info(f'Successfully stopped bot {short_token}')
             except Exception as e:
-                logger.error(f'Error stopping bot {short_token}: {str(e)}')
+                logger.error(f'Error stopping bot {short_token}:\n{str(e)}')
         active_bots.clear()
         await db_manager.close_all()
         logger.warning('Cleanup completed.')
@@ -571,7 +651,9 @@ async def webhook_handler(bot_token: str, request: Request):
         except ValueError:
             return False
 
-    client_host = request.client.host
+    client_host = request.client.host if request.client else None
+    if not client_host:
+        raise HTTPException(status_code=403, detail="Access denied: Invalid client")
     if not is_telegram_ip(client_host, TELEGRAM_IP_RANGES):
         raise HTTPException(status_code=403, detail="Access denied: Not a Telegram IP")
     

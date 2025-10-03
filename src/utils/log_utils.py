@@ -92,16 +92,18 @@ class WebhookLogFilter(logging.Filter):
     """A custom logging filter to sanitize bot tokens from webhook URLs."""
     def filter(self, record: logging.LogRecord) -> bool:
         if record.name == 'uvicorn.access' and record.args and len(record.args) >= 5:
-            path = record.args[2]
+            # Convert args to list for safe indexing
+            args_list = list(record.args)
+            if len(args_list) > 2:
+                path = args_list[2]
 
-            # ADD THIS TYPE CHECK to ensure 'path' is a string
-            if isinstance(path, str) and path.startswith("/webhook/"):
-                token = path.split('/')[2]
-                sanitized_path = f"/webhook/{shorten_token(token)}"
-                
-                args = list(record.args)
-                args[2] = sanitized_path
-                record.args = tuple(args)
+                # Type-check to ensure 'path' is a string
+                if isinstance(path, str) and path.startswith("/webhook/"):
+                    token = path.split('/')[2]
+                    sanitized_path = f"/webhook/{shorten_token(token)}"
+                    
+                    args_list[2] = sanitized_path
+                    record.args = tuple(args_list)
         
         return True
 

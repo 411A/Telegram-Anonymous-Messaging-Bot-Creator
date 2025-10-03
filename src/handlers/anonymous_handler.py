@@ -2,7 +2,7 @@ from telegram import Update, CallbackQuery
 from telegram.ext import ContextTypes
 from telegram import Message, InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji
 from telegram.constants import ParseMode
-from telegram.error import Forbidden
+from telegram.error import Forbidden, BadRequest
 from utils.responses import get_response, ResponseKey
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
 from utils.helpers import generate_anonymous_id, check_language_availability
@@ -52,9 +52,9 @@ def generate_inline_buttons_anonymous(user_lang: str) -> InlineKeyboardMarkup:
         InlineKeyboardMarkup: The configured keyboard markup with anonymous sending options
     '''
     keyboard = [
-        [InlineKeyboardButton(get_response(ResponseKey.ANONYMOUS_INLINEBUTTON1, user_lang), callback_data=CBD_ANON_NO_HISTORY)],
-        [InlineKeyboardButton(get_response(ResponseKey.ANONYMOUS_INLINEBUTTON2, user_lang), callback_data=CBD_ANON_WITH_HISTORY)],
-        [InlineKeyboardButton(get_response(ResponseKey.ANONYMOUS_INLINEBUTTON3, user_lang), callback_data=CBD_ANON_FORWARD)]
+        [InlineKeyboardButton(str(get_response(ResponseKey.ANONYMOUS_INLINEBUTTON1, user_lang)), callback_data=CBD_ANON_NO_HISTORY)],
+        [InlineKeyboardButton(str(get_response(ResponseKey.ANONYMOUS_INLINEBUTTON2, user_lang)), callback_data=CBD_ANON_WITH_HISTORY)],
+        [InlineKeyboardButton(str(get_response(ResponseKey.ANONYMOUS_INLINEBUTTON3, user_lang)), callback_data=CBD_ANON_FORWARD)]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -78,7 +78,17 @@ async def handle_admin_answer(query: CallbackQuery, admin_id: int, sender_user_i
     Raises:
         Exception: If there's an error in handling the admin answer process
     '''
-    user_lang = check_language_availability(query.from_user.language_code)
+    if not query.from_user:
+        logger.warning("handle_admin_answer: No user in callback query, returning")
+        return
+    if not query.message or not isinstance(query.message, Message):
+        logger.warning("handle_admin_answer: No valid message in callback query, returning")
+        return
+    if not query.message.reply_to_message:
+        logger.warning("handle_admin_answer: No reply_to_message in callback query message, returning")
+        return
+        
+    user_lang = check_language_availability(query.from_user.language_code or 'en')
     admin_id = int(admin_id)
     try: 
         # Create cancel button keyboard and inform admin
@@ -124,7 +134,10 @@ async def reply_timeout_handler(query: CallbackQuery, admin_id: int, context: Co
         timeout (int, optional): The timeout duration in seconds. Defaults to ADMIN_REPLY_TIMEOUT
     '''
     await asyncio.sleep(timeout)
-    user_lang = check_language_availability(query.from_user.language_code)
+    if not query.from_user:
+        logger.warning("reply_timeout_handler: No user in callback query, returning")
+        return
+    user_lang = check_language_availability(query.from_user.language_code or 'en')
     # Check if the waiting state still exists (i.e. admin did not reply)
     if await admins_reply_cache.exists(admin_id):
         state = await admins_reply_cache.get(admin_id)
@@ -163,10 +176,23 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
     '''
     query = update.callback_query
     if query is None:
+        logger.warning("handle_admin_callback: No callback query found, returning")
+        return
+    
+    if not query.from_user:
+        logger.warning("handle_admin_callback: No user in callback query, returning")
+        return
+    
+    if not query.message or not isinstance(query.message, Message):
+        logger.warning("handle_admin_callback: No valid message in callback query, returning")
         return
     
     query_data = query.data
-    user_lang = check_language_availability(query.from_user.language_code)
+    if not query_data:
+        logger.warning("handle_admin_callback: No callback data found, returning")
+        return
+        
+    user_lang = check_language_availability(query.from_user.language_code or 'en')
     admin_id = int(query.from_user.id)
 
     # Handle cancel reply button click
@@ -198,14 +224,19 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         full_encrypted_hash = await db_manager.get_full_hash_by_prefix(prefix, suffix, 'messages')
         encryptor = Encryptor()
 
+        if not full_encrypted_hash:
+            await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
+            logger.warning("handle_admin_callback: No encrypted hash found for prefix/suffix")
+            return
+
         try:
             raw_admin_callback = encryptor.decrypt(full_encrypted_hash)
             # Expecting raw_admin_callback in format: option SEP admin_id SEP sender_user_id SEP original_message_id SEP timestamp
-            option, admin_id, sender_user_id, original_message_id, timestamp = raw_admin_callback.split(SEP)
+            option, admin_id_str, sender_user_id_str, original_message_id_str, timestamp = raw_admin_callback.split(SEP)
             # Convert IDs to integers
-            admin_id = int(admin_id)
-            sender_user_id = int(sender_user_id)
-            original_message_id = int(original_message_id)
+            admin_id = int(admin_id_str)
+            sender_user_id = int(sender_user_id_str)
+            original_message_id = int(original_message_id_str)
         except Exception as decrypt_error:
             await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
             logger.exception(f"Error: Invalid message data:\n{decrypt_error}")
@@ -240,7 +271,14 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
     Raises:
         Exception: If there's an error in the blocking/unblocking process
     '''
-    user_lang = check_language_availability(query.from_user.language_code)
+    if not query.from_user:
+        logger.warning("handle_admin_block: No user in callback query, returning")
+        return
+    if not query.message or not isinstance(query.message, Message):
+        logger.warning("handle_admin_block: No valid message in callback query, returning")
+        return
+        
+    user_lang = check_language_availability(query.from_user.language_code or 'en')
     admin_id = int(admin_id)
     try:
         # Get the bot username
@@ -254,20 +292,29 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
         #! Extract the inline keyboard from the message.
         keyboard = query.message.reply_markup.inline_keyboard
 
-        if len(keyboard) > 1:
+        if len(keyboard) > 1 and len(keyboard[0]) > 0 and len(keyboard[1]) > 1:
             #! First row contains the read button.
             read_callback_data = keyboard[0][0].callback_data
             raw_admin_callback = keyboard[1][0].callback_data
             answer_callback_data = keyboard[1][1].callback_data
-        else:
+        elif len(keyboard) > 0 and len(keyboard[0]) > 1:
             #! Only one row is present; assume read is not available.
             read_callback_data = None
             #! Expect two buttons: block and answer.
             raw_admin_callback = keyboard[0][0].callback_data
             answer_callback_data = keyboard[0][1].callback_data
+        else:
+            await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
+            logger.warning("handle_admin_block: Invalid keyboard structure")
+            return
 
         if not raw_admin_callback:
             await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
+            return
+        
+        if not isinstance(raw_admin_callback, str):
+            await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
+            logger.warning("handle_admin_block: Invalid callback data type")
             return
         
         operation, prefix, suffix = raw_admin_callback.split(SEP)
@@ -276,17 +323,27 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
         db_manager = DatabaseManager()
         full_encrypted_hash = await db_manager.get_full_hash_by_prefix(prefix, suffix, 'messages')
         encryptor = Encryptor()
+        
+        if not full_encrypted_hash:
+            await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
+            logger.warning("handle_admin_block: No encrypted hash found for prefix/suffix")
+            return
+            
         decrypted_data = encryptor.decrypt(full_encrypted_hash)
-        option, admin_id, sender_user_id, original_message_id, timestamp = decrypted_data.split(SEP)
+        option, admin_id_str, sender_user_id_str, original_message_id_str, timestamp = decrypted_data.split(SEP)
         
         # Convert sender_user_id to integer
-        sender_user_id = int(sender_user_id)
+        sender_user_id = int(sender_user_id_str)
 
         # Check if user is already blocked
         is_blocked = await db_manager.is_user_blocked(sender_user_id, bot_username)
         
         # Update block status and message
         message_text = query.message.text
+        if not message_text:
+            await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
+            logger.warning("handle_admin_block: No message text found")
+            return
         if is_blocked:
             # Unblock user
             success = await db_manager.unblock_user(sender_user_id, bot_username)
@@ -319,7 +376,7 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
                 if "#BLOCKED" not in message_text:
                     updated_text = message_text.replace("🎛️ Admin controls:", "#BLOCKED\n🎛️ Admin controls:")
                 else:
-                    updated_text = message_text.replace("🎛️ Admin controls:")
+                    updated_text = message_text
 
                 # Update keyboard buttons
                 new_keyboard = [
@@ -361,18 +418,26 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     Returns:
         None
     '''
+    message = update.effective_message
+    if not message:
+        logger.warning("handle_messages: No effective message found, returning")
+        return
+    
+    user = update.effective_user
+    if not user:
+        logger.warning("handle_messages: No effective user found, returning")
+        return
+    
     db_manager = DatabaseManager()
     # Get user language code
-    user_lang = check_language_availability(update.message.from_user.language_code)
+    user_lang = check_language_availability(user.language_code or 'en')
     # Get bot's username
     bot_username = context.bot.username
     # Get admin manager singleton instance
     admin_manager = AdminManager()
     
     # Get user ID from the message
-    user_id = update.message.from_user.id
-    if not user_id:
-        return
+    user_id = user.id
     
     
     #* Handle admin message
@@ -390,9 +455,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 original_message_id = admin_reply_state.get('original_message_id')
                                 
                 # 1. Get sender's id
-                sender_user_id = update.message.from_user.id
+                sender_user_id = user.id
                 # 2. Get message_id
-                message_id = update.message.id
+                message_id = message.message_id
                 # 3. Get Unix timestamp with nanoseconds
                 timestamp_ns = time.time_ns()
                                 
@@ -424,15 +489,15 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     
                     try:
                         # Send the admin's reply to the target user
-                        await update.message.copy(
+                        await message.copy(
                             chat_id=target_user_id,
                             reply_to_message_id=original_message_id,
                             reply_markup=user_markup
                         )
-                    except Forbidden as forbidden_error:
+                    except Forbidden:
                         # Handle case where the bot is blocked by the user
                         logger.error("Bot is blocked by user. Cannot send reply.")
-                        await update.message.reply_text(
+                        await message.reply_text(
                             text=get_response(ResponseKey.ADMIN_REPLY_FAILED_USER_BLOCKED_BOT, user_lang),
                             quote=True,
                             parse_mode=ParseMode.HTML
@@ -469,33 +534,33 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     
                 except Exception as e:
                     logger.error(f"Failed to send admin reply: {str(e)}\nStack trace:", exc_info=True)
-                    await update.message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), quote=True, parse_mode=ParseMode.HTML)
+                    await message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), quote=True, parse_mode=ParseMode.HTML)
                     # Clean up the reply state from cache on error
                     await admins_reply_cache.remove(user_id)
             except Exception as e:
                 logger.error(f"Error in admin reply handler: {str(e)}\nStack trace:", exc_info=True)
-                await update.message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), quote=True, parse_mode=ParseMode.HTML)
+                await message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), quote=True, parse_mode=ParseMode.HTML)
                 # Clean up the reply state from cache on error
                 await admins_reply_cache.remove(user_id)
         else:
             try:
                 # Inform admin to use the Answer button
-                await update.message.reply_text(get_response(ResponseKey.ADMIN_MUST_USE_ANSWER_BUTTON, user_lang), parse_mode=ParseMode.HTML)
+                await message.reply_text(get_response(ResponseKey.ADMIN_MUST_USE_ANSWER_BUTTON, user_lang), parse_mode=ParseMode.HTML)
             except Exception as e:
                 logger.exception(f"Failed to inform admin about reply context, blocked its bot or am I in a group without right permissions?!:\n{str(e)}")
         return
 
     # Check if user is blocked
     if await db_manager.is_user_blocked(user_id, bot_username):
-        await update.message.reply_text(get_response(ResponseKey.USER_BLOCKED, user_lang), parse_mode=ParseMode.HTML)
+        await message.reply_text(get_response(ResponseKey.USER_BLOCKED, user_lang), parse_mode=ParseMode.HTML)
         return
 
     # Handle anonymous message for non-admin users
     keyboard = generate_inline_buttons_anonymous(user_lang)
-    await update.message.reply_text(
+    await message.reply_text(
         text=get_response(ResponseKey.ANONYMOUS_INLINEBUTTON_REPLY_TEXT, user_lang),
         reply_markup=keyboard,
-        reply_to_message_id=update.message.message_id,
+        reply_to_message_id=message.message_id,
         parse_mode=ParseMode.HTML
     )
 #endregion Messages
@@ -522,14 +587,30 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     '''
 
     query = update.callback_query
-    query_data = query.data
-    user_lang = check_language_availability(query.from_user.language_code)
+    if not query:
+        logger.warning("handle_anonymous_callback: No callback query found, returning")
+        return
+    
+    if not query.from_user:
+        logger.warning("handle_anonymous_callback: No user in callback query, returning")
+        return
+    
+    if not query.message or not isinstance(query.message, Message):
+        logger.warning("handle_anonymous_callback: No valid message in callback query, returning")
+        return
 
-    original_sender_message: Message = query.message.reply_to_message
+    query_data = query.data
+    if not query_data:
+        logger.warning("handle_anonymous_callback: No callback data found, returning")
+        return
+        
+    user_lang = check_language_availability(query.from_user.language_code or 'en')
+
+    original_sender_message = query.message.reply_to_message
     
     # Check if the original message still exists
     if not original_sender_message:
-        await query.message.edit_text(get_response(ResponseKey.ERROR_ORIGINAL_MESSAGE_DELETED, user_lang))
+        await query.message.edit_text(get_response(ResponseKey.USER_ERROR_ORIGINAL_MESSAGE_DELETED, user_lang))
         logger.warning("User tried to use a callback for a deleted message.")
         return
 
@@ -537,11 +618,16 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     await query.message.edit_text(get_response(ResponseKey.ENCRYPTING_MESSAGE, user_lang))
 
     # 1. Get the option (remove 'SendAnon_' prefix)
-    option = query.data.replace(f'SendAnon{SEP}', '')
+    option = query_data.replace(f'SendAnon{SEP}', '')
     # 2. Get receiver admin_id using bot username
     bot_username = context.bot.username
     admin_manager = AdminManager()
     admin_id = await admin_manager.get_admin_id_from_bot(bot_username)
+    
+    if not admin_id:
+        await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+        logger.error("handle_anonymous_callback: No admin ID found for bot")
+        return
     # 3. Get sender's user_id
     sender_user_id = query.from_user.id
     # 4. Get original message_id
@@ -590,10 +676,15 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
 
     if query_data == CBD_ANON_NO_HISTORY:
         try:
-            # Copy the message to admin
-            copied_msg = await original_sender_message.copy(
-                chat_id=admin_id
-            )
+            try:
+                # Copy the message to admin
+                copied_msg = await original_sender_message.copy(
+                    chat_id=admin_id
+                )
+            except BadRequest as br_e:
+                logger.exception(f"Telegram API Error: {str(br_e)}")
+                await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                return
             
             try:
                 # Send admin controls
@@ -704,12 +795,27 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     '''
     try:
         query = update.callback_query
+        if not query:
+            logger.warning("handle_read_callback: No callback query found, returning")
+            return
+        
+        if not query.message or not isinstance(query.message, Message):
+            logger.warning("handle_read_callback: No valid message in callback query, returning")
+            return
+        
         query_data = query.data
+        if not query_data:
+            logger.warning("handle_read_callback: No callback data found, returning")
+            return
 
         # Get prefix and suffix from callback data
         _, prefix, suffix = query_data.split(SEP)
 
         # Convert keyboard to list of lists for modification
+        if not query.message.reply_markup or not query.message.reply_markup.inline_keyboard:
+            logger.warning("handle_read_callback: No reply markup found, returning")
+            return
+            
         keyboard = list(map(list, query.message.reply_markup.inline_keyboard))
         # Ensure there's a button to remove
         if keyboard and keyboard[0]:

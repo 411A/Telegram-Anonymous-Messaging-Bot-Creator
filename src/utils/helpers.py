@@ -6,7 +6,8 @@ import hashlib
 import random
 import string
 import time
-from configs.settings import AVAILABLE_LANGUAGES_LITERAL, AVAILABLE_LANGUAGES_LIST
+from typing import Optional
+from configs.settings import AVAILABLE_LANGUAGES_LIST
 
 
 def extract_bot_token(text: str) -> str:
@@ -32,7 +33,7 @@ def shorten_token(token: str) -> str:
     return f"{token[:3]}…{token[-3:]}"
 
 
-def check_language_availability(language_code: str) -> AVAILABLE_LANGUAGES_LITERAL:
+def check_language_availability(language_code: str) -> str:
     """Check if a language code is available in the supported languages list.
     
     Args:
@@ -45,7 +46,7 @@ def check_language_availability(language_code: str) -> AVAILABLE_LANGUAGES_LITER
     return language_code if language_code in AVAILABLE_LANGUAGES_LIST else 'en'
 
 
-def generate_anonymous_id(user_id: int, user_fname: str = None, with_history: bool = False) -> str:
+def generate_anonymous_id(user_id: int, user_fname: Optional[str] = None, with_history: bool = False) -> str:
     '''Generate a unique, hashtag-friendly anonymous ID.'''
     seed = f"{user_id}{user_fname}"
     if not with_history:

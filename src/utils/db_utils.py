@@ -1,6 +1,6 @@
 import aiosqlite
 import os
-from typing import Optional, Dict, List
+from typing import Optional, List
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -15,12 +15,18 @@ logger = logging.getLogger(__name__)
 
 class DatabaseManager:
     _instance = None
+    
+    def __init__(self):
+        # These attributes are set in __new__, but declared here for type checking
+        self.db_path: str
+        self._pool: dict
+        self.encryptor: Encryptor
 
-    def __new__(cls, db_path: str = SQLITE_DATABASE_NAME):
+    def __new__(cls, db_path: str = str(SQLITE_DATABASE_NAME)):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance.db_path = db_path
-            cls._instance._pool: Dict[str, aiosqlite.Connection] = dict()
+            cls._instance._pool = dict()
             cls._instance.encryptor = Encryptor()
             # Initialize database tables asynchronously
             asyncio.create_task(cls._instance._init_db())
@@ -136,7 +142,7 @@ class DatabaseManager:
             logger.exception(f"Error removing bot entry: {e}")
             return False
 
-    async def store_partial_hash(self, prefix_hash: str, stored_hash: str, table_name: str, year_month: str = None) -> bool:
+    async def store_partial_hash(self, prefix_hash: str, stored_hash: str, table_name: str, year_month: Optional[str] = None) -> bool:
         """Store an encrypted hash in the given table."""
         try:
             async with self._get_connection() as conn:
@@ -280,18 +286,23 @@ class DatabaseManager:
 
 class Encryptor:
     _instance = None
+    
+    def __init__(self, password: Optional[str] = None):
+        # This attribute is set in __new__, but declared here for type checking
+        self.master_password: Optional[str]
+        if password is not None:
+            self.master_password = password
 
-    def __new__(cls, password: str = None):
+    def __new__(cls, password: Optional[str] = None):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance.master_password = password
         return cls._instance
 
-    def __init__(self, password: str = None):
-        if password is not None:
-            self.master_password = password
-
     def _derive_key(self, salt: bytes) -> bytes:
+        if self.master_password is None:
+            logger.error("_derive_key: Master password not set, cannot derive key")
+            raise ValueError("Master password must be set before encryption/decryption")
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
@@ -301,6 +312,10 @@ class Encryptor:
         return kdf.derive(self.master_password.encode())
 
     def encrypt(self, data: str, deterministic: bool = False) -> str:
+        if self.master_password is None:
+            logger.error("encrypt: Master password not set, cannot encrypt data")
+            raise ValueError("Master password must be set before encryption")
+            
         if deterministic:
             # Use master password as salt for deterministic encryption
             salt = self.master_password.encode()[:32].ljust(32, b'0')
@@ -333,19 +348,22 @@ class Encryptor:
 
 class AdminManager:
     _instance = None
+    
+    def __init__(self, db_manager: Optional[DatabaseManager] = None, encryptor: Optional[Encryptor] = None):
+        # These attributes are set in __new__, but declared here for type checking
+        self.db: DatabaseManager
+        self.encryptor: Encryptor
+        if db_manager is not None:
+            self.db = db_manager
+        if encryptor is not None:
+            self.encryptor = encryptor
 
-    def __new__(cls, db_manager: DatabaseManager = None, encryptor: Encryptor = None):
+    def __new__(cls, db_manager: Optional[DatabaseManager] = None, encryptor: Optional[Encryptor] = None):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance.db = db_manager or DatabaseManager()
             cls._instance.encryptor = encryptor or Encryptor()
         return cls._instance
-
-    def __init__(self, db_manager: DatabaseManager = None, encryptor: Encryptor = None):
-        if db_manager is not None:
-            self.db = db_manager
-        if encryptor is not None:
-            self.encryptor = encryptor
 
     async def add_admin(self, bot_token: str, bot_username: str, user_id: int) -> bool:
         
@@ -360,7 +378,7 @@ class AdminManager:
         except aiosqlite.IntegrityError:
             return False
 
-    async def is_admin(self, user_id: int, bot_username: str = None) -> bool:
+    async def is_admin(self, user_id: int, bot_username: Optional[str] = None) -> bool:
         async with self.db._get_connection() as conn:
             if bot_username:
                 # Encrypt both user_id and bot_username for database query

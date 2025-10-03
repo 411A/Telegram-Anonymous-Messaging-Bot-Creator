@@ -1,6 +1,6 @@
 from enum import Enum
 from dataclasses import dataclass
-from typing import Union, List, Dict, Any
+from typing import List, Dict, Any
 from configs.settings import (
     BTN_EMOJI_NO_HISTORY, BTN_EMOJI_WITH_HISTORY, BTN_EMOJI_FORWARD,
     BTN_EMOJI_BLOCK, BTN_EMOJI_UNBLOCK,
@@ -10,8 +10,13 @@ from configs.settings import (
 # Use Union to support both string responses and list/dict responses.
 @dataclass(frozen=True)
 class Response:
-    en: Union[str, List[Dict[str, Any]]]
-    fa: Union[str, List[Dict[str, Any]]]
+    en: str
+    fa: str
+
+@dataclass(frozen=True)
+class CommandResponse:
+    en: List[Dict[str, Any]]
+    fa: List[Dict[str, Any]]
 
 class ResponseKey(Enum):
     INVALID_TOKEN = Response(
@@ -241,60 +246,6 @@ class ResponseKey(Enum):
         en="🤖 Secure & anonymous messaging bot created by @{BOT_CREATOR_USERNAME}",
         fa="🤖 ربات پیام‌رسان امن و ناشناس ایجاد شده توسط @{BOT_CREATOR_USERNAME}"
     )
-    MAIN_BOT_COMMANDS = Response(
-        en=[
-            {
-                'command': 'start',
-                'description': '🔰 Guide'
-            },
-            {
-                'command': 'register',
-                'description': '🔮 Register a new bot'
-            },
-            {
-                'command': 'revoke',
-                'description': "⛓️‍💥 Disable running bot"
-            },
-            {
-                'command': 'safetycheck',
-                'description': "🛡️ Check the bot's safety"
-            },
-            {
-                'command': 'privacy',
-                'description': "🔏 Privacy Policy"
-            },
-            {
-                'command': 'about',
-                'description': "👨🏻‍💻 About Developer"
-            }
-        ],
-        fa=[
-            {
-                'command': 'start',
-                'description': '🔰 راهنما'
-            },
-            {
-                'command': 'register',
-                'description': '🔮 ثبت یک ربات جدید'
-            },
-            {
-                'command': 'revoke',
-                'description': "⛓️‍💥 غیرفعال‌سازی ربات درحال اجرا"
-            },
-            {
-                'command': 'safetycheck',
-                'description': "🛡️ چک‌کردن امنیت ربات"
-            },
-            {
-                'command': 'privacy',
-                'description': "🔏 سیاست حفظ حریم خصوصی"
-            },
-            {
-                'command': 'about',
-                'description': "👨🏻‍💻 درباره توسعه‌دهنده"
-            }
-        ]
-    )
     BOT_NAME = Response(
         en='HidEgo | Anonymous messaging',
         fa='ربات‌سازِ پیام ناشناس HidEgo'
@@ -318,36 +269,6 @@ class ResponseKey(Enum):
 🔸 متن‌باز و شفاف.
 🔸 بررسی امنیت با /safetycheck."""
 )
-    CREATED_BOT_COMMANDS = Response(
-        en=[
-            {
-                'command': 'start',
-                'description': '🔰 Guide'
-            },
-            {
-                'command': 'privacy',
-                'description': '🔏 Privacy Policy'
-            },
-            {
-                'command': 'safetycheck',
-                'description': "🛡️ Check the bot's safety"
-            }
-        ],
-        fa=[
-            {
-                'command': 'start',
-                'description': '🔰 راهنما'
-            },
-            {
-                'command': 'privacy',
-                'description': '🔏 سیاست حفظ حریم خصوصی'
-            },
-            {
-                'command': 'safetycheck',
-                'description': "🛡️ چک‌کردن امنیت ربات"
-            }
-        ]
-    )
     START_COMMAND = Response(
         en='''👋 Welcome!
 This bot offers secure, anonymous messaging, created by @{BOT_CREATOR_USERNAME}.
@@ -559,7 +480,94 @@ Script running since:\n{RUNNING_SCRIPT_SINCE} UTC\n
     )
 
 
-def get_response(key: ResponseKey, lang: str = 'en', **kwargs: Any) -> Union[str, List[Dict[str, Any]]]:
+class CommandKey(Enum):
+    MAIN_BOT_COMMANDS = CommandResponse(
+        en=[
+            {
+                'command': 'start',
+                'description': '🔰 Guide'
+            },
+            {
+                'command': 'register',
+                'description': '🔮 Register a new bot'
+            },
+            {
+                'command': 'revoke',
+                'description': "⛓️‍💥 Disable running bot"
+            },
+            {
+                'command': 'safetycheck',
+                'description': "🛡️ Check the bot's safety"
+            },
+            {
+                'command': 'privacy',
+                'description': "🔏 Privacy Policy"
+            },
+            {
+                'command': 'about',
+                'description': "👨🏻‍💻 About Developer"
+            }
+        ],
+        fa=[
+            {
+                'command': 'start',
+                'description': '🔰 راهنما'
+            },
+            {
+                'command': 'register',
+                'description': '🔮 ثبت یک ربات جدید'
+            },
+            {
+                'command': 'revoke',
+                'description': "⛓️‍💥 غیرفعال‌سازی ربات درحال اجرا"
+            },
+            {
+                'command': 'safetycheck',
+                'description': "🛡️ چک‌کردن امنیت ربات"
+            },
+            {
+                'command': 'privacy',
+                'description': "🔏 سیاست حفظ حریم خصوصی"
+            },
+            {
+                'command': 'about',
+                'description': "👨🏻‍💻 درباره توسعه‌دهنده"
+            }
+        ]
+    )
+    CREATED_BOT_COMMANDS = CommandResponse(
+        en=[
+            {
+                'command': 'start',
+                'description': '🔰 Guide'
+            },
+            {
+                'command': 'privacy',
+                'description': '🔏 Privacy Policy'
+            },
+            {
+                'command': 'safetycheck',
+                'description': "🛡️ Check the bot's safety"
+            }
+        ],
+        fa=[
+            {
+                'command': 'start',
+                'description': '🔰 راهنما'
+            },
+            {
+                'command': 'privacy',
+                'description': '🔏 سیاست حفظ حریم خصوصی'
+            },
+            {
+                'command': 'safetycheck',
+                'description': "🛡️ چک‌کردن امنیت ربات"
+            }
+        ]
+    )
+
+
+def get_response(key: ResponseKey, lang: str = 'en', **kwargs: Any) -> str:
     """
     Retrieve a formatted response message.
 
@@ -569,10 +577,23 @@ def get_response(key: ResponseKey, lang: str = 'en', **kwargs: Any) -> Union[str
         **kwargs: Formatting parameters for the message.
 
     Returns:
-        The formatted message string (or original value for non-string responses).
+        The formatted message string.
     """
     response_obj = key.value
     message = response_obj.en if lang == 'en' else response_obj.fa
-    if isinstance(message, str):
-        return message.format(**kwargs) if kwargs else message
-    return message
+    return message.format(**kwargs) if kwargs else message
+
+
+def get_commands(key: CommandKey, lang: str = 'en') -> List[Dict[str, Any]]:
+    """
+    Retrieve a list of bot commands.
+
+    Args:
+        key: A member of CommandKey enum.
+        lang: Language code ('en' or 'fa').
+
+    Returns:
+        The list of commands with descriptions.
+    """
+    response_obj = key.value
+    return response_obj.en if lang == 'en' else response_obj.fa

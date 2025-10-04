@@ -9,6 +9,7 @@ from telegram.ext import (
     Application, CommandHandler, ContextTypes,
     MessageHandler, CallbackQueryHandler, filters
 )
+from telegram.error import TimedOut
 from telegram.constants import ParseMode
 from typing import Dict, List, Optional
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
@@ -338,6 +339,8 @@ async def configure_bot_interface(bot: Bot, bot_username: str):
 async def create_and_configure_bot(token: str) -> Application:
     global MAIN_BOT_USERNAME
     short_token = shorten_token(token)
+    bot_username = None
+    webhook_info = None
 
     try:
         application = (
@@ -348,17 +351,53 @@ async def create_and_configure_bot(token: str) -> Application:
         )
         # Get bot instance
         new_bot = application.bot
-        bot_info = await new_bot.get_me()
-        bot_username = bot_info.username
+        
+        # Retry mechanism for bot info retrieval with timeout handling
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                bot_info = await new_bot.get_me()
+                bot_username = bot_info.username
+                break
+            except TimedOut:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Timeout getting bot info for {short_token}, attempt {attempt + 1}/{max_retries}, retrying in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(f"Failed to get bot info for {short_token} after {max_retries} attempts due to timeout")
+                    raise
+            except Exception as e:
+                logger.error(f"Failed to get bot info for {short_token}: {type(e).__name__}")
+                raise
 
         webhook_url = f'{WEBHOOK_BASE_URL}/webhook/{token}'
-        webhook_info = await new_bot.get_webhook_info()
+
+        # Get webhook info with retry mechanism
+        retry_delay = 2  # Reset delay
+        for attempt in range(max_retries):
+            try:
+                webhook_info = await new_bot.get_webhook_info()
+                break
+            except TimedOut:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Timeout getting webhook info for {short_token}, attempt {attempt + 1}/{max_retries}, retrying...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error(f"Failed to get webhook info for {short_token} after {max_retries} attempts due to timeout")
+                    raise
+            except Exception as e:
+                logger.error(f"Failed to get webhook info for {short_token}: {type(e).__name__}")
+                raise
+                
     except Exception as e:
         logger.exception(f"Failed to initialize bot {short_token}:\n{str(e)}")
         raise
 
     try:
-        if not webhook_info.url or webhook_info.url != webhook_url:
+        if not webhook_info or not webhook_info.url or webhook_info.url != webhook_url:
             await new_bot.delete_webhook()
             # Set new webhook with proper configuration
             await new_bot.set_webhook(
@@ -367,8 +406,8 @@ async def create_and_configure_bot(token: str) -> Application:
                 secret_token=TG_SECRET_TOKEN,
             )
             # Configure bot settings immediately after creation
-            assert bot_username is not None
-            await configure_bot_interface(new_bot, bot_username)
+            if bot_username:
+                await configure_bot_interface(new_bot, bot_username)
             logger.info(f'Set new webhook for bot {short_token}')
         else:
             logger.info(f'Webhook already correctly configured for bot {short_token}')
@@ -652,21 +691,28 @@ async def webhook_handler(bot_token: str, request: Request):
             return False
 
     client_host = request.client.host if request.client else None
+    short_token = shorten_token(bot_token)
+    
     if not client_host:
+        logger.warning(f"Webhook access denied for {short_token}: Invalid client")
         raise HTTPException(status_code=403, detail="Access denied: Invalid client")
+    
     if not is_telegram_ip(client_host, TELEGRAM_IP_RANGES):
+        logger.warning(f"Webhook access denied for {short_token}: Non-Telegram IP {client_host}")
         raise HTTPException(status_code=403, detail="Access denied: Not a Telegram IP")
     
     # Check our secret token for enhanced security
     received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
     if received_secret != TG_SECRET_TOKEN:
+        logger.warning(f"Webhook access denied for {short_token}: Invalid secret token")
         raise HTTPException(status_code=403, detail="Invalid secret token")
 
     try:
         # Lazily get or re-create the bot application if necessary.
         application = await get_application(bot_token)
     except Exception as e:
-        return {"status": "error", "message": f"Bot creation failed: {str(e)}"}
+        logger.error(f"Bot application creation failed for {short_token}: {type(e).__name__}")
+        return {"status": "error", "message": "Bot creation failed"}
 
     update_data = await request.json()
     update_obj = Update.de_json(update_data, application.bot)
@@ -674,6 +720,7 @@ async def webhook_handler(bot_token: str, request: Request):
     try:
         application.update_queue.put_nowait(update_obj)
     except asyncio.QueueFull:
+        logger.warning(f"Update queue full for bot {short_token}")
         return {"status": "error", "message": "Queue overloaded"}
 
     return {"status": "ok"}

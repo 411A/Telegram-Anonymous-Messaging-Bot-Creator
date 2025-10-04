@@ -248,7 +248,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         elif operation == CBD_ADMIN_BLOCK:
             asyncio.create_task(handle_admin_block(query, admin_id, context))
         else:
-            logger.error(f"Unknown operation: {operation}")
+            logger.error(f"Unknown operation:\n{operation}")
             await query.answer(get_response(ResponseKey.ADMIN_UNKNOWN_OPERATION, user_lang), show_alert=True)
 
     except Exception as db_error:
@@ -522,7 +522,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                             # Delete the wait message
                             await wait_msg.delete()
                         except Exception as e:
-                            logger.error(f"Failed to handle wait message: {e}")
+                            logger.error(f"Failed to handle wait message:\n{e}")
                             pass
 
                     # Clean up the reply state from cache
@@ -533,12 +533,12 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await db_manager.store_partial_hash(read_button_prefix, read_stored_hash, 'reads')
                     
                 except Exception as e:
-                    logger.error(f"Failed to send admin reply: {str(e)}\nStack trace:", exc_info=True)
+                    logger.error(f"Failed to send admin reply:\n{str(e)}\nStack trace:", exc_info=True)
                     await message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), quote=True, parse_mode=ParseMode.HTML)
                     # Clean up the reply state from cache on error
                     await admins_reply_cache.remove(user_id)
             except Exception as e:
-                logger.error(f"Error in admin reply handler: {str(e)}\nStack trace:", exc_info=True)
+                logger.error(f"Error in admin reply handler:\n{str(e)}\nStack trace:", exc_info=True)
                 await message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), quote=True, parse_mode=ParseMode.HTML)
                 # Clean up the reply state from cache on error
                 await admins_reply_cache.remove(user_id)
@@ -546,23 +546,45 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             try:
                 # Inform admin to use the Answer button
                 await message.reply_text(get_response(ResponseKey.ADMIN_MUST_USE_ANSWER_BUTTON, user_lang), parse_mode=ParseMode.HTML)
+            except BadRequest as br_e:
+                error_msg = str(br_e).lower()
+                if "topic_closed" in error_msg:
+                    logger.warning("Cannot send message: topic is closed")
+                elif "chat not found" in error_msg:
+                    logger.warning("Cannot send message: chat not found")
+                elif "bot was blocked" in error_msg:
+                    logger.warning("Cannot send message: bot was blocked by user")
+                else:
+                    logger.warning(f"Cannot send message to admin:\n{br_e}")
+            except Forbidden as f_e:
+                logger.warning(f"Access forbidden when sending admin notification:\n{f_e}")
             except Exception as e:
-                logger.exception(f"Failed to inform admin about reply context, blocked its bot or am I in a group without right permissions?!:\n{str(e)}")
+                logger.exception(f"Failed to inform admin about reply context, blocked its bot or am I in a group without right permissions?!:\n{e}")
         return
 
     # Check if user is blocked
     if await db_manager.is_user_blocked(user_id, bot_username):
-        await message.reply_text(get_response(ResponseKey.USER_BLOCKED, user_lang), parse_mode=ParseMode.HTML)
+        try:
+            await message.reply_text(get_response(ResponseKey.USER_BLOCKED, user_lang), parse_mode=ParseMode.HTML)
+        except (BadRequest, Forbidden) as e:
+            logger.warning(f"Cannot send blocked user message:\n{e}")
+        except Exception as e:
+            logger.error(f"Unexpected error sending blocked user message:\n{e}")
         return
 
     # Handle anonymous message for non-admin users
     keyboard = generate_inline_buttons_anonymous(user_lang)
-    await message.reply_text(
-        text=get_response(ResponseKey.ANONYMOUS_INLINEBUTTON_REPLY_TEXT, user_lang),
-        reply_markup=keyboard,
-        reply_to_message_id=message.message_id,
-        parse_mode=ParseMode.HTML
-    )
+    try:
+        await message.reply_text(
+            text=get_response(ResponseKey.ANONYMOUS_INLINEBUTTON_REPLY_TEXT, user_lang),
+            reply_markup=keyboard,
+            reply_to_message_id=message.message_id,
+            parse_mode=ParseMode.HTML
+        )
+    except (BadRequest, Forbidden) as e:
+        logger.warning(f"Cannot send anonymous options message:\n{e}")
+    except Exception as e:
+        logger.error(f"Unexpected error sending anonymous options message:\n{e}")
 #endregion Messages
 
 #region Anon CB
@@ -682,7 +704,30 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                     chat_id=admin_id
                 )
             except BadRequest as br_e:
-                logger.exception(f"Telegram API Error: {str(br_e)}")
+                error_msg = str(br_e).lower()
+                if "can't be copied" in error_msg:
+                    logger.warning("Message cannot be copied, attempting alternative sending method")
+                    # Alternative: send message content as text
+                    try:
+                        message_text = original_sender_message.text or original_sender_message.caption or "📷 Media message (cannot be copied)"
+                        copied_msg = await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=f"📝 Anonymous message:\n\n{message_text}"
+                        )
+                    except Exception as alt_e:
+                        logger.error(f"Alternative sending method also failed:\n{alt_e}")
+                        await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                        return
+                elif "chat not found" in error_msg:
+                    logger.warning("Cannot copy message: admin chat not found")
+                    await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                    return
+                else:
+                    logger.warning(f"Cannot copy message:\n{error_msg}")
+                    await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                    return
+            except Exception as e:
+                logger.error(f"Unexpected error during message copy:\n{e}")
                 await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
                 return
             
@@ -697,13 +742,13 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                     parse_mode=ParseMode.HTML
                 )
             except Exception as admin_e:
-                logger.exception(f"Telegram API Error: {str(admin_e)}")
-                raise
+                logger.warning(f"Failed to send admin controls:\n{admin_e}")
+                # Still confirm to user since message was copied successfully
             
             # Confirm to user
             await query.message.edit_text(get_response(ResponseKey.MESSAGE_SENT_NO_HISTORY, user_lang))
         except Exception as e:
-            logger.exception(f"Error in handle_anonymous_callback (no history): {str(e)}")
+            logger.exception(f"Error in handle_anonymous_callback (no history):\n{e}")
             await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
         
     elif query_data == CBD_ANON_WITH_HISTORY:
@@ -712,10 +757,38 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
             sender_user_first_name = query.from_user.first_name
             anon_id = generate_anonymous_id(sender_user_id, sender_user_first_name, with_history=True)
             
-            # Copy the message to admin with anonymous ID
-            copied_msg = await original_sender_message.copy(
-                chat_id=admin_id
-            )
+            try:
+                # Copy the message to admin with anonymous ID
+                copied_msg = await original_sender_message.copy(
+                    chat_id=admin_id
+                )
+            except BadRequest as br_e:
+                error_msg = str(br_e).lower()
+                if "can't be copied" in error_msg:
+                    logger.warning("Message cannot be copied, attempting alternative sending method")
+                    # Alternative: send message content as text
+                    try:
+                        message_text = original_sender_message.text or original_sender_message.caption or "📷 Media message (cannot be copied)"
+                        copied_msg = await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=f"📝 Anonymous message {anon_id}:\n\n{message_text}"
+                        )
+                    except Exception as alt_e:
+                        logger.error(f"Alternative sending method also failed:\n{alt_e}")
+                        await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                        return
+                elif "chat not found" in error_msg:
+                    logger.warning("Cannot copy message: admin chat not found")
+                    await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                    return
+                else:
+                    logger.warning(f"Cannot copy message:\n{br_e}")
+                    await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                    return
+            except Exception as e:
+                logger.error(f"Unexpected error during message copy:\n{e}")
+                await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                return
             
             try:
                 # Send admin controls with anonymous ID
@@ -728,13 +801,13 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                     parse_mode=ParseMode.HTML
                 )
             except Exception as admin_e:
-                logger.exception(f"Telegram API Error: {str(admin_e)}")
+                logger.exception(f"Failed to send admin controls:\n{admin_e}")
                 raise
             
             # Confirm to user
             await query.message.edit_text(get_response(ResponseKey.MESSAGE_SENT_WITH_HISTORY, user_lang))
         except Exception as e:
-            logger.exception(f"Error in handle_anonymous_callback (with history): {str(e)}")
+            logger.exception(f"Error in handle_anonymous_callback (with history):\n{e}")
             await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
         
     elif query_data == CBD_ANON_FORWARD:
@@ -742,8 +815,37 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
             # Get user's name for forward
             sender_name = f"<code>{query.from_user.first_name} {query.from_user.last_name if query.from_user.last_name else ''}</code>"
             
-            # Forward the message to admin
-            forwarded_msg = await original_sender_message.forward(admin_id)
+            try:
+                # Forward the message to admin
+                forwarded_msg = await original_sender_message.forward(admin_id)
+            except BadRequest as br_e:
+                error_msg = str(br_e).lower()
+                if "can't be forwarded" in error_msg or "can't be copied" in error_msg:
+                    logger.warning("Message cannot be forwarded, attempting alternative sending method")
+                    # Alternative: send message content as text with user info
+                    try:
+                        message_text = original_sender_message.text or original_sender_message.caption or "📷 Media message (cannot be forwarded)"
+                        forwarded_msg = await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=f"📨 Forwarded from {sender_name}:\n\n{message_text}",
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception as alt_e:
+                        logger.error(f"Alternative forwarding method also failed:\n{alt_e}")
+                        await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                        return
+                elif "chat not found" in error_msg:
+                    logger.warning("Cannot forward message: admin chat not found")
+                    await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                    return
+                else:
+                    logger.warning(f"Cannot forward message:\n{br_e}")
+                    await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                    return
+            except Exception as e:
+                logger.error(f"Unexpected error during message forward:\n{e}")
+                await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                return
             
             try:
                 # Send admin controls with user info
@@ -755,13 +857,13 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                     parse_mode=ParseMode.HTML,
                 )
             except Exception as admin_e:
-                logger.exception(f"Telegram API Error: {str(admin_e)}")
-                raise
+                logger.warning(f"Failed to send admin controls:\n{admin_e}")
+                # Still confirm to user since message was forwarded successfully
             
             # Confirm to user
             await query.message.edit_text(get_response(ResponseKey.MESSAGE_FORWARDED, user_lang))
         except Exception as e:
-            logger.exception(f"Error in handle_anonymous_callback (forward): {str(e)}")
+            logger.exception(f"Error in handle_anonymous_callback (forward):\n{e}")
             await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
         
     else:

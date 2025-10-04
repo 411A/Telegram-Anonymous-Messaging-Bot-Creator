@@ -32,6 +32,10 @@ class ResponseKey(Enum):
         en="🤖🚮 You deleted the message you want to send! Please send another message and do not delete it.",
         fa="🤖🚮 شما پیامی که می‌خواستید ارسال کنید را حذف کردید! لطفاً پیام دیگری ارسال کنید و آن را حذف نکنید."
     )
+    DELETED_ORIGINAL_MESSAGE_CANT_REACT = Response(
+        en="🤖🚮 The original message you wanted to react to has been deleted, so you can't react to it. The user wasn't notified.",
+        fa="🤖🚮 پیام اصلی که می‌خواستید به آن واکنش نشان دهید حذف شده است، بنابراین نمی‌توانید به آن واکنش نشان دهید. کاربر مطلع نشد."
+    )
     ENCRYPTING_MESSAGE = Response(
         en="🤖🔒 Encrypting your message and preparing it for sending...",
         fa="🤖🔒 در حال رمزگذاری پیام شما و آماده‌سازی جهت ارسال..."

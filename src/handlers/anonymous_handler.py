@@ -952,7 +952,13 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 is_big=False
             )
         except Exception as e:
-            logger.exception(e)
+            if isinstance(e, BadRequest):
+                error_msg = str(e).lower()
+                if "message to react not found" in error_msg:
+                    await query.answer(
+                        get_response(ResponseKey.DELETED_ORIGINAL_MESSAGE_CANT_REACT, check_language_availability(query.from_user.language_code or 'en')),
+                        show_alert=True
+                    )
 
         # Delete the hash from database
         await db_manager.remove_partial_hash(prefix, 'reads')

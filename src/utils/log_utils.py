@@ -6,6 +6,7 @@ from typing import Dict
 from configs.settings import LOG_FILENAME, LOGGER_TIMEZONE, LOGGER_STREAM_LEVEL, LOGGER_FILE_LEVEL
 from utils.helpers import shorten_token
 
+
 # Log messages with emojis for better visibility
 log_messages: Dict[str, str] = {
     'bot_registered': '🤖 Bot registered successfully',
@@ -89,7 +90,7 @@ def setup_logging():
     logger.addHandler(file_logging)
 
 class WebhookLogFilter(logging.Filter):
-    """A custom logging filter to sanitize bot tokens from webhook URLs."""
+    """A custom logging filter to sanitize bot tokens from webhook URLs and add detailed logging for 403 errors."""
     def filter(self, record: logging.LogRecord) -> bool:
         if record.name == 'uvicorn.access' and record.args and len(record.args) >= 5:
             # Convert args to list for safe indexing
@@ -104,6 +105,11 @@ class WebhookLogFilter(logging.Filter):
                     
                     args_list[2] = sanitized_path
                     record.args = tuple(args_list)
+                    
+                    # Add context for 403 errors
+                    if len(args_list) > 4 and "403" in str(args_list[4]):
+                        # This is a 403 on webhook - add more context
+                        record.msg = f"⚠️ Webhook security blocked: {record.msg}"
         
         return True
 
@@ -111,9 +117,37 @@ class WebhookLogFilter(logging.Filter):
 def patch_uvicorn_logging():
     """
     Finds the Uvicorn access logger and adds our security filter to it.
+    Also configures timezone-aware formatting for FastAPI console output.
     """
-    # Get ONLY the logger that handles access messages
-    uvicorn_access_logger = logging.getLogger("uvicorn.access")
     
-    # Add our custom filter to it
+    # Set timezone converter for all loggers
+    logging_tz = ZoneInfo(LOGGER_TIMEZONE)
+    
+    # Custom formatter with timezone
+    class TimezoneFormatter(logging.Formatter):
+        def formatTime(self, record, datefmt=None):
+            dt_obj = dt.fromtimestamp(record.created, tz=logging_tz)
+            if datefmt:
+                return dt_obj.strftime(datefmt)
+            else:
+                return dt_obj.strftime('%Y/%m/%d %H:%M:%S')
+    
+    # Get the Uvicorn access logger
+    uvicorn_access_logger = logging.getLogger("uvicorn.access")
+    uvicorn_error_logger = logging.getLogger("uvicorn.error")
+    
+    # Add our custom filter to access logger
     uvicorn_access_logger.addFilter(WebhookLogFilter())
+    
+    # Configure timezone-aware formatting for console output
+    console_format = "[%(levelname)s] %(asctime)s %(name)s: %(message)s"
+    console_formatter = TimezoneFormatter(console_format, datefmt='%Y/%m/%d %H:%M:%S')
+    
+    # Apply formatter to existing handlers
+    for handler in uvicorn_access_logger.handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            handler.setFormatter(console_formatter)
+    
+    for handler in uvicorn_error_logger.handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            handler.setFormatter(console_formatter)

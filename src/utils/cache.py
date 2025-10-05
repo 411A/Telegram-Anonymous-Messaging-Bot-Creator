@@ -1,7 +1,7 @@
 import asyncio
 from typing import Dict, Any, Optional
 
-# Async-Safe Singleton Cache for Admins Replies class
+# High-performance Async-Safe Singleton Cache for Admin Replies
 class AdminsReplyCache:
     _instance = None
 
@@ -14,20 +14,25 @@ class AdminsReplyCache:
         # Initialize only once
         if not hasattr(self, '_cache'):
             self._cache: Dict[int, Dict[str, Any]] = dict()
-            self._lock = asyncio.Lock()
+            # Use RWLock-like pattern for better performance
+            self._write_lock = asyncio.Lock()
 
     async def set(self, admin_id: int, state: dict) -> None:
-        async with self._lock:
+        """Set admin reply state with minimal locking."""
+        async with self._write_lock:
             self._cache[admin_id] = state
 
     async def get(self, admin_id: int) -> Optional[Dict[str, Any]]:
-        async with self._lock:
-            return self._cache.get(admin_id)
+        """Get admin reply state without locking for read operations."""
+        # Read operations don't need locks in Python due to GIL
+        return self._cache.get(admin_id)
 
     async def remove(self, admin_id: int) -> Optional[Dict[str, Any]]:
-        async with self._lock:
+        """Remove admin reply state with minimal locking."""
+        async with self._write_lock:
             return self._cache.pop(admin_id, None)
 
     async def exists(self, admin_id: int) -> bool:
-        async with self._lock:
-            return admin_id in self._cache
+        """Check if admin reply state exists without locking."""
+        # Read operations don't need locks in Python due to GIL
+        return admin_id in self._cache

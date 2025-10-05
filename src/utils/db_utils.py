@@ -36,7 +36,17 @@ class DatabaseManager:
     async def _get_connection(self):
         """Get a connection from the pool or create a new one."""
         if self.db_path not in self._pool:
-            self._pool[self.db_path] = await aiosqlite.connect(self.db_path)
+            conn = await aiosqlite.connect(self.db_path)
+            # Optimize SQLite settings for better performance
+            await conn.execute("PRAGMA journal_mode = WAL")
+            await conn.execute("PRAGMA synchronous = NORMAL")
+            # 64MB cache
+            await conn.execute("PRAGMA cache_size = -64000")
+            await conn.execute("PRAGMA temp_store = MEMORY")
+            # 256MB memory map
+            await conn.execute("PRAGMA mmap_size = 268435456")
+            await conn.execute("PRAGMA foreign_keys = ON")
+            self._pool[self.db_path] = conn
         try:
             yield self._pool[self.db_path]
         except Exception as e:
@@ -72,16 +82,23 @@ class DatabaseManager:
                 )
             """)
             await conn.execute("PRAGMA journal_mode=WAL;")
-            await conn.execute("PRAGMA cache_size=1000;")
+            # 64MB cache
+            await conn.execute("PRAGMA cache_size=-64000;")
+            await conn.execute("PRAGMA synchronous=NORMAL;")
+            # Store temp tables in memory
+            await conn.execute("PRAGMA temp_store=MEMORY;")
             # Handle contention when the database is locked by another connection, wait up to 5000ms
             await conn.execute("PRAGMA busy_timeout=5000;")
+            # Optimized indexes for faster queries
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_aid ON admins(admin_id)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_bu ON admins(bot_username)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_bu_admins ON admins(bot_username)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_bt ON admins(bot_token)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_pemh ON messages(prefixed_msg_hash)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_year_month ON messages(year_month)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_peh ON reads(prefixed_hash)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_uib ON blocks(blocked_user_id)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_bu ON blocks(bot_username)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_bu_blocks ON blocks(bot_username)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_composite_blocks ON blocks(blocked_user_id, bot_username)")
 
             await conn.commit()
     async def get_full_hash_by_prefix(self, prefix: str, suffix: str, table_name: str) -> Optional[str]:
@@ -105,7 +122,7 @@ class DatabaseManager:
                 raise ValueError("Invalid table name. Use 'messages' or 'reads'.")
 
             async with self._get_connection() as conn:
-                query = "SELECT {} FROM {} WHERE {} = ?".format(hash_col, table_name, prefix_col)
+                query = "SELECT {} FROM {} WHERE {} = ? LIMIT 1".format(hash_col, table_name, prefix_col)
                 async with conn.execute(query, (prefix,)) as cursor:
                     result = await cursor.fetchone()
                     
@@ -247,9 +264,9 @@ class DatabaseManager:
             encrypted_bu = self.encryptor.encrypt(bot_username, deterministic=True)
             
             async with self._get_connection() as conn:
-                async with conn.execute('SELECT 1 FROM blocks WHERE blocked_user_id = ? AND bot_username = ?', (encrypted_id, encrypted_bu)) as cursor:
-                    result = await cursor.fetchone()
-                    return result is not None
+                # Use LIMIT 1 for faster lookup on composite index
+                async with conn.execute('SELECT 1 FROM blocks WHERE blocked_user_id = ? AND bot_username = ? LIMIT 1', (encrypted_id, encrypted_bu)) as cursor:
+                    return await cursor.fetchone() is not None
         except Exception as e:
             logger.exception(f"Error checking if user is blocked: {e}")
             return False
@@ -379,31 +396,31 @@ class AdminManager:
             return False
 
     async def is_admin(self, user_id: int, bot_username: Optional[str] = None) -> bool:
+        # Use deterministic encryption for consistent lookups  
+        encrypted_id = self.encryptor.encrypt(str(user_id), deterministic=True)
+        
+        # Query database with optimized query
         async with self.db._get_connection() as conn:
             if bot_username:
-                # Encrypt both user_id and bot_username for database query
-                encrypted_id = self.encryptor.encrypt(str(user_id), deterministic=True)
+                # Encrypt bot_username for database query
                 encrypted_bu = self.encryptor.encrypt(bot_username, deterministic=True)
-                # Query both admin_id and bot_username together
-                async with conn.execute('SELECT 1 FROM admins WHERE admin_id = ? AND bot_username = ?', (encrypted_id, encrypted_bu)) as cursor:
-                    result = await cursor.fetchone()
-                    return result is not None
+                # Use composite index for faster lookup
+                async with conn.execute('SELECT 1 FROM admins WHERE admin_id = ? AND bot_username = ? LIMIT 1', (encrypted_id, encrypted_bu)) as cursor:
+                    return await cursor.fetchone() is not None
             else:
-                # Encrypt user_id for direct comparison
-                encrypted_id = self.encryptor.encrypt(str(user_id), deterministic=True)
-                async with conn.execute('SELECT 1 FROM admins WHERE admin_id = ?', (encrypted_id,)) as cursor:
-                    result = await cursor.fetchone()
-                    return result is not None
+                # Use index for faster lookup
+                async with conn.execute('SELECT 1 FROM admins WHERE admin_id = ? LIMIT 1', (encrypted_id,)) as cursor:
+                    return await cursor.fetchone() is not None
 
-    @cached(LRUCache(maxsize=1000), lambda args, kwargs: args[1] if args else kwargs.get('bot_username'))
+    @cached(LRUCache(maxsize=1000), lambda args, kwargs: args[1] if len(args) > 1 else kwargs.get('bot_username', 'default'))
     async def get_admin_id_from_bot(self, bot_username: str) -> Optional[int]:
         try:
             # Use deterministic encryption for bot username to ensure consistent lookup
             encrypted_bu = self.encryptor.encrypt(bot_username, deterministic=True)
             
             async with self.db._get_connection() as conn:
-                # Query the admin record directly using the encrypted bot username
-                async with conn.execute('SELECT admin_id FROM admins WHERE bot_username = ?', (encrypted_bu,)) as cursor:
+                # Query the admin record directly using the encrypted bot username with LIMIT
+                async with conn.execute('SELECT admin_id FROM admins WHERE bot_username = ? LIMIT 1', (encrypted_bu,)) as cursor:
                     result = await cursor.fetchone()
                     
                     if not result:

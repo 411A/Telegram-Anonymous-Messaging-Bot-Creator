@@ -428,16 +428,16 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.warning("handle_messages: No effective user found, returning")
         return
     
-    db_manager = DatabaseManager()
     # Get user language code
     user_lang = check_language_availability(user.language_code or 'en')
     # Get bot's username
     bot_username = context.bot.username
-    # Get admin manager singleton instance
-    admin_manager = AdminManager()
-    
     # Get user ID from the message
     user_id = user.id
+    
+    # Get singleton instances
+    db_manager = DatabaseManager()
+    admin_manager = AdminManager()
     
     
     #* Handle admin message
@@ -639,11 +639,15 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     # Show encryption status message to user
     await query.message.edit_text(get_response(ResponseKey.ENCRYPTING_MESSAGE, user_lang))
 
+    # Get singleton instances once for better performance
+    admin_manager = AdminManager()
+    encryptor = Encryptor()
+    db_manager = DatabaseManager()
+
     # 1. Get the option (remove 'SendAnon_' prefix)
     option = query_data.replace(f'SendAnon{SEP}', '')
     # 2. Get receiver admin_id using bot username
     bot_username = context.bot.username
-    admin_manager = AdminManager()
     admin_id = await admin_manager.get_admin_id_from_bot(bot_username)
     
     if not admin_id:
@@ -660,8 +664,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     raw_read_callback = f"{sender_user_id}{SEP}{original_message_id}{SEP}{timestamp_ns}"
     # Construct the callback string for admin-side
     raw_admin_callback = f"{option}{SEP}{admin_id}{SEP}{sender_user_id}{SEP}{original_message_id}{SEP}{timestamp_ns}"
-    # 6. Encrypt the callback string
-    encryptor = Encryptor()
+    # 6. Encrypt the callback strings (reuse encryptor instance)
     encrypted_read_callback = encryptor.encrypt(raw_read_callback)
     encrypted_admin_callback = encryptor.encrypt(raw_admin_callback)
     # Store the encrypted callback in the database (without last 30 characters)
@@ -677,8 +680,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     answer_callback = f"{CBD_ADMIN_ANSWER}{SEP}{admin_button_prefix}{SEP}{admin_button_suffix}"
     #print("Answer callback length:", len(answer_callback.encode('utf-8')))
     
-    # Store the encrypted message hash
-    db_manager = DatabaseManager()
+    # Store the encrypted message hash (reuse db_manager instance)
     # Store the year and month the message sent
     year_month = time.strftime("%Y-%m")
     await db_manager.store_partial_hash(admin_button_prefix, admin_stored_hash, 'messages', year_month)
@@ -929,13 +931,15 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # Get the full hash from database
         db_manager = DatabaseManager()
+        encryptor = Encryptor()
+        
+        # Get the full hash from database
         full_encrypted_hash = await db_manager.get_full_hash_by_prefix(prefix, suffix, 'reads')
         
         if not full_encrypted_hash:
             return
 
-        # Decrypt the hash to get message details
-        encryptor = Encryptor()
+        # Decrypt the hash to get message details (reuse encryptor instance)
         decrypted_data = encryptor.decrypt(full_encrypted_hash)
         sender_user_id, message_id, timestamp = decrypted_data.split(SEP)
 

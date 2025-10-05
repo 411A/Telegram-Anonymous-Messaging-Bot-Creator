@@ -1,4 +1,14 @@
 import asyncio
+import platform
+
+# Performance optimization: Use uvloop on Unix systems
+if platform.system() != 'Windows':
+    try:
+        import uvloop
+        uvloop.install()
+    except ImportError:
+        pass  # Fall back to default event loop
+
 import ipaddress
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
@@ -50,6 +60,7 @@ import aiofiles
 #! Import cachetools for LRUCache and prepare a per-bot lock dict.
 from cachetools import LRUCache
 from collections import defaultdict
+
 
 # Initialize logging when module is imported
 setup_logging()

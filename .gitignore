@@ -4,9 +4,10 @@ __pycache__/
 data/
 logs/
 secret/
-.env
 config.secure
+diff/
 all_differences.md
+.env
 *.log*
 *.db
 *.db-wal

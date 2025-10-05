@@ -1,0 +1,66 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+*.db
+*.db-wal
+*.db-shm
+*.log*
+config.secure
+all_differences.md
+
+# Don't copy these as they're mounted as volumes
+data/
+logs/
+secret/
+diff/
+
+# Backup files
+backup_fromdocker*/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore

@@ -57,7 +57,13 @@ class GitHubChecker:
         # Get the directory of the currently running file (e.g., .../src/utils)
         current_dir = os.path.dirname(os.path.abspath(__file__))
         # Go up two levels to get the project root (from utils to src, then src to root)
-        return os.path.dirname(os.path.dirname(current_dir))
+        project_root = os.path.dirname(os.path.dirname(current_dir))
+        
+        # If we're running from Docker, we might be in /app, so check for that
+        if current_dir.startswith('/app'):
+            return '/app'
+        
+        return project_root
 
     async def _get_file_hash(self, filepath, algorithm="sha256"):
         """Compute the hash of a file."""

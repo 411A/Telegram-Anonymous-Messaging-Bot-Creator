@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Final, Literal
 import os
+import ipaddress
 from dotenv import load_dotenv
 
 # Base directory = one level up from src/
@@ -8,9 +9,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_FOLDER_NAME = 'data'
 SECURE_CONFIG_FOLDER_NAME = 'secret'
 LOG_FOLDER_NAME = 'logs'
+DIFF_FOLDER_NAME = 'diff'
 Path(BASE_DIR / DATA_FOLDER_NAME).mkdir(exist_ok=True)
 Path(BASE_DIR / SECURE_CONFIG_FOLDER_NAME).mkdir(exist_ok=True)
 Path(BASE_DIR / LOG_FOLDER_NAME).mkdir(exist_ok=True)
+Path(BASE_DIR / DIFF_FOLDER_NAME).mkdir(exist_ok=True)
 
 load_dotenv(dotenv_path=BASE_DIR / ".env", override=True)
 
@@ -33,7 +36,7 @@ SEP = '|'
 SQLITE_DATABASE_NAME = BASE_DIR / DATA_FOLDER_NAME / 'DATA.db'
 SECURE_CONFIG_FILE = BASE_DIR / SECURE_CONFIG_FOLDER_NAME / 'config.secure'
 # The file where safety check differences are stored
-DIFFERENCES_FILE_NAME: Final = BASE_DIR / 'all_differences.md'
+DIFFERENCES_FILE_NAME: Final = BASE_DIR / DIFF_FOLDER_NAME / 'all_differences.md'
 GITHUB_CHECKER_FILENAME = BASE_DIR / 'src' / 'utils' / 'github_checker.py'
 
 # GitHub repository details for the safety checker
@@ -81,6 +84,20 @@ TELEGRAM_IP_RANGES = [
     '2001:b28:f23c::/48',
     '2a0a:f280::/32'
 ]
+
+# Replace with exact IPs/CIDRs of proxies you control (cloudflared container, nginx, etc.)
+DOCKER_NETWORK_IP = os.getenv('DOCKER_NETWORK_IP', '').strip()
+TRUSTED_PROXY_CIDRS = list()
+if DOCKER_NETWORK_IP:
+    for part in [p.strip() for p in DOCKER_NETWORK_IP.split(',') if p.strip()]:
+        try:
+            TRUSTED_PROXY_CIDRS.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            try:
+                TRUSTED_PROXY_CIDRS.append(ipaddress.ip_network(part + '/32', strict=False))
+            except ValueError:
+                pass
+TRUSTED_PROXY_CIDRS.append(ipaddress.ip_network('127.0.0.1/32'))
 
 # CORS settings
 CORS_SETTINGS = {

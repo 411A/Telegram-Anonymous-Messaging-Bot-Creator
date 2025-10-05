@@ -33,6 +33,17 @@ UQCGk4IU5nm6dYWjXTx6vSQVOtKO4LQg3m8cRcq1eQo7vhCl
 
 ---
 
+#### 🐳 **Quick Docker Setup**
+For easy deployment, all Docker files are in the `docker/` folder:
+```bash
+cd docker/
+chmod +x run.sh
+./run.sh start
+```
+See [docker/README.md](docker/README.md) for complete Docker documentation.
+
+---
+
 #### 🚀 **Installation**  
 1. **Clone the Repository**:  
    ```bash

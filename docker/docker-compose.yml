@@ -1,0 +1,51 @@
+services:
+  hidego-tgbot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: hidego-tgbot
+    
+    #* Run as host user to avoid ownership issues
+    user: "${USER_UID:-1000}:${USER_GID:-1000}"
+    
+    #* Enable TTY and interactive mode for password input
+    tty: true
+    stdin_open: true
+    
+    #* Environment variables from .env file
+    env_file:
+      - ../.env
+    
+    #* Port mapping - use FASTAPI_PORT from .env
+    ports:
+      - "${FASTAPI_PORT:-8000}:${FASTAPI_PORT:-8000}"
+    
+    #* Volume mounts for persistent data
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../secret:/app/secret
+      - ../diff:/app/diff
+      - ../.env:/app/.env:ro
+    
+    #* Network configuration
+    networks:
+      - hidego-network
+    
+    #* Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    #* Resource limits
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 1G
+    #       cpus: '1.0'
+    #     reservations:
+    #       memory: 512M
+    #       cpus: '0.5'
+
+networks:
+  hidego-network:
+    driver: bridge

@@ -1,5 +1,6 @@
 import asyncio
 import platform
+import sys
 
 # Performance optimization: Use uvloop on Unix systems
 if platform.system() != 'Windows':
@@ -33,7 +34,7 @@ from utils.github_checker import (
 )
 from utils.helpers import extract_bot_token, shorten_token, check_language_availability
 from configs.settings import (
-    CORS_SETTINGS, TELEGRAM_IP_RANGES,
+    CORS_SETTINGS, TELEGRAM_IP_RANGES, TRUSTED_PROXY_CIDRS,
     CBD_ANON_NO_HISTORY,
     CBD_ANON_WITH_HISTORY,
     CBD_ANON_FORWARD,
@@ -626,7 +627,8 @@ async def lifespan(app: FastAPI):
     db_manager = DatabaseManager()
     encryption_key = get_encryption_key()
     if encryption_key is None:
-        raise ValueError("Encryption key not found")
+        print("Encryption setup cancelled by user. Exiting gracefully.")
+        sys.exit(0)
     encryptor = Encryptor(encryption_key)
     admin_manager = AdminManager(db_manager, encryptor)
 
@@ -701,6 +703,19 @@ async def webhook_handler(bot_token: str, request: Request):
         except ValueError:
             return False
 
+    def _parse_ip(ip_str: Optional[str]) -> Optional[ipaddress._BaseAddress]:
+        if not ip_str:
+            return None
+        s = ip_str.strip()
+        if s.startswith('[') and ']' in s:
+            s = s.split(']')[0].lstrip('[')
+        elif ':' in s and s.count(':') == 1:
+            s = s.split(':')[0]
+        try:
+            return ipaddress.ip_address(s)
+        except ValueError:
+            return None
+
     client_host = request.client.host if request.client else None
     short_token = shorten_token(bot_token)
     
@@ -708,18 +723,43 @@ async def webhook_handler(bot_token: str, request: Request):
         logger.warning(f"Webhook access denied for {short_token}: Invalid client")
         raise HTTPException(status_code=403, detail="Access denied: Invalid client")
     
-    if not is_telegram_ip(client_host, TELEGRAM_IP_RANGES):
-        logger.warning(f"Webhook access denied for {short_token}: Non-Telegram IP {client_host}")
-        raise HTTPException(status_code=403, detail="Access denied: Not a Telegram IP")
-    
-    # Check our secret token for enhanced security
     received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
     if received_secret != TG_SECRET_TOKEN:
-        logger.warning(f"Webhook access denied for {short_token}: Invalid secret token")
+        logger.warning(f"Webhook access denied for {short_token}: Invalid secret token from {client_host}")
         raise HTTPException(status_code=403, detail="Invalid secret token")
+    
+    peer_ip = _parse_ip(client_host)
+    effective_ip: Optional[str] = None
+    if peer_ip:
+        trusted = any(
+            peer_ip in (net if not isinstance(net, str) else ipaddress.ip_network(net, strict=False))
+            for net in TRUSTED_PROXY_CIDRS
+        )
+        if trusted:
+            xff = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
+            if xff:
+                first = xff.split(",")[0].strip()
+                parsed = _parse_ip(first)
+                if parsed:
+                    effective_ip = str(parsed)
+    if effective_ip is None and peer_ip is not None:
+        effective_ip = str(peer_ip)
+
+    is_telegram = is_telegram_ip(effective_ip, TELEGRAM_IP_RANGES) if effective_ip else False
+    is_localhost = effective_ip in ['127.0.0.1', '::1']
+    is_trusted_proxy = False
+    if effective_ip:
+        ip_obj = ipaddress.ip_address(effective_ip)
+        is_trusted_proxy = any(
+            ip_obj in (net if not isinstance(net, str) else ipaddress.ip_network(net, strict=False))
+            for net in TRUSTED_PROXY_CIDRS
+        )
+
+    if not (is_telegram or is_localhost or is_trusted_proxy):
+        logger.warning(f"Webhook access denied for {short_token}: Suspicious IP {client_host} with valid token")
+        raise HTTPException(status_code=403, detail="Access denied: Suspicious origin")
 
     try:
-        # Lazily get or re-create the bot application if necessary.
         application = await get_application(bot_token)
     except Exception as e:
         logger.error(f"Bot application creation failed for {short_token}: {type(e).__name__}")

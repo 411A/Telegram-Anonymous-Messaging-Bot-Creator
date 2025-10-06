@@ -4,282 +4,268 @@ import difflib
 import aiofiles
 import aiohttp
 import asyncio
+from fnmatch import fnmatch
 from .responses import get_response, ResponseKey
 from configs.settings import PROJECT_GITHUB_URL, DIFFERENCES_FILE_NAME
 
 
 class GitHubChecker:
+    """
+    Checks the integrity of local source code against a GitHub repository.
+    This optimized version uses SHA-1 hashing to match Git's own object hashes,
+    allowing it to verify all remote files with a single API call.
+    """
     def __init__(self, repo_owner, repo_name, branch="main", ignore_files=None, ignore_folders=None):
-        """
-        Initialize the GitHubChecker.
-
-        Parameters:
-            repo_owner (str): GitHub repository owner.
-            repo_name (str): GitHub repository name.
-            branch (str): Repository branch to check (default "main").
-            ignore_files (list): List of filenames to ignore (default [".env"]).
-            ignore_folders (list): List of folder names to ignore (default [".venv", "__pycache__", ".git"]).
-        """
-        self.local_dir = self._get_running_file_dir()
         self.repo_owner = repo_owner
         self.repo_name = repo_name
         self.branch = branch
-        self.ignore_files = ignore_files if ignore_files is not None else [".env"]
-        self.ignore_folders = ignore_folders if ignore_folders is not None else [".venv", "__pycache__", ".git"]
-        self._check_state = None  # Stores the check results after running once
-        self._has_run = False
-        self.gitignore_patterns = list()
-        # Load .gitignore patterns asynchronously (fire and forget)
+        self.local_dir = self._get_project_root()
+        
+        # Initialize ignore lists, including common defaults
+        self.ignore_files = set(ignore_files if ignore_files is not None else [".env", DIFFERENCES_FILE_NAME])
+        self.ignore_folders = set(ignore_folders if ignore_folders is not None else [".venv", "__pycache__", ".git"])
+        
+        self.gitignore_patterns = []
+        
+        # Caching attributes to store results after the first run
+        self.local_hashes = None
+        self.github_hashes = None
+        self._check_state = None
+        self._has_run_check = False
+        
+        # Asynchronously load .gitignore patterns upon instantiation
         asyncio.create_task(self._load_gitignore())
 
     async def _load_gitignore(self):
-        """Load patterns from .gitignore file if it exists."""
+        """Asynchronously loads and parses patterns from the .gitignore file."""
         gitignore_path = os.path.join(self.local_dir, ".gitignore")
-        if os.path.exists(gitignore_path):
-            async with aiofiles.open(gitignore_path, 'r') as f:
-                async for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        # Remove trailing slashes for consistency
-                        pattern = line.rstrip('/')
-                        self.gitignore_patterns.append(pattern)
-                        # If it's a file pattern (no slashes), add it to ignore_files
-                        if '/' not in pattern:
-                            self.ignore_files.append(pattern)
-                        # If it ends with a slash or contains a slash, it's a folder pattern
-                        elif pattern.endswith('/') or '/' in pattern:
-                            folder = pattern.rstrip('/')
-                            if folder not in self.ignore_folders:
-                                self.ignore_folders.append(folder)
-
-    def _get_running_file_dir(self):
-        """Get the root directory of the project."""
-        # Get the directory of the currently running file (e.g., .../src/utils)
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        # Go up two levels to get the project root (from utils to src, then src to root)
-        project_root = os.path.dirname(os.path.dirname(current_dir))
+        if not os.path.exists(gitignore_path):
+            return
         
-        # If we're running from Docker, we might be in /app, so check for that
-        if current_dir.startswith('/app'):
+        async with aiofiles.open(gitignore_path, 'r') as f:
+            lines = await f.readlines()
+            for line in lines:
+                stripped = line.strip()
+                if stripped and not stripped.startswith('#'):
+                    self.gitignore_patterns.append(stripped)
+
+    def _get_project_root(self):
+        """Determines the project's root directory."""
+        if os.environ.get("DOCKER_ENV"):  # Check if running in a known Docker environment
             return '/app'
-        
-        return project_root
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        # Assuming this file is in .../src/utils, navigate up to the root
+        return os.path.dirname(os.path.dirname(current_dir))
 
-    async def _get_file_hash(self, filepath, algorithm="sha256"):
-        """Compute the hash of a file."""
-        hasher = hashlib.new(algorithm)
+    async def _get_git_sha1_hash(self, filepath):
+        """
+        Computes the SHA-1 hash of a file in the same way Git does,
+        including the "blob" header.
+        """
+        hasher = hashlib.sha1()
         async with aiofiles.open(filepath, "rb") as f:
-            while chunk := await f.read(8192):
-                hasher.update(chunk)
+            content = await f.read()
+            # Git prefixes file content with "blob <size>\0" before hashing
+            header = f"blob {len(content)}\0".encode('utf-8')
+            hasher.update(header + content)
         return hasher.hexdigest()
 
-    async def _hash_file_entry(self, filepath):
-        """Hash a file and return its relative path with its hash."""
-        rel_path = os.path.relpath(filepath, self.local_dir)
-        file_hash = await self._get_file_hash(filepath)
-        return rel_path, file_hash
-
-    async def _get_local_hashes(self):
-        """Generate hashes for all local files (ignoring specified files and folders)."""
-        local_hashes = dict()
-        files_to_hash = list()
-
-        for root, _, files in os.walk(self.local_dir):
-            rel_root = os.path.relpath(root, self.local_dir)
-            # Skip ignored folders
-            if any(ignored in root for ignored in self.ignore_folders):
-                continue
-            # Skip folders matching gitignore patterns
-            if self._matches_gitignore(os.path.join(rel_root, '')):
-                continue
-
-            for file in files:
-                # Skip files in ignore list
-                if file in self.ignore_files:
-                    continue
-                rel_path = os.path.join(rel_root, file)
-                if self._matches_gitignore(rel_path):
-                    continue
-                files_to_hash.append(os.path.join(root, file))
-
-        tasks = [self._hash_file_entry(f) for f in files_to_hash]
-        results = await asyncio.gather(*tasks)
-        local_hashes = dict(results)
-        return local_hashes
-
-    def _matches_gitignore(self, path):
-        """Check if a path matches any gitignore pattern."""
-        from fnmatch import fnmatch
+    def _is_ignored(self, path):
+        """Checks if a given path (file or folder) should be ignored."""
         path = path.replace('\\', '/')
+        
+        # Check against simple ignore lists first
+        if os.path.basename(path) in self.ignore_files:
+            return True
+        if any(f"/{folder}/" in f"/{path}/" for folder in self.ignore_folders):
+            return True
+            
+        # Check against .gitignore patterns
         for pattern in self.gitignore_patterns:
-            if pattern.endswith('/'):
-                # Directory pattern
-                if fnmatch(path + '/', pattern + '*'):
-                    return True
-            else:
-                # File pattern
-                if fnmatch(path, pattern):
-                    return True
+            if fnmatch(path, pattern) or fnmatch(os.path.basename(path), pattern):
+                return True
+            if pattern.endswith('/') and path.startswith(pattern.rstrip('/')):
+                return True
         return False
 
-    async def _fetch_and_hash_github_file(self, item, session):
-        """Fetch a file from GitHub and compute its hash.
-        
-        Skip files that are in the ignore list.
-        """
-        # Check if file should be ignored (using basename)
-        if os.path.basename(item["path"]) in self.ignore_files:
-            return None
+    def _collect_files_to_hash_sync(self):
+        """Synchronously walks the directory tree and collects files, respecting ignores."""
+        files_to_hash = []
+        for root, dirs, files in os.walk(self.local_dir, topdown=True):
+            # Prune ignored directories to prevent walking them
+            dirs[:] = [d for d in dirs if not self._is_ignored(os.path.join(os.path.relpath(root, self.local_dir), d))]
+            
+            for file in files:
+                rel_path = os.path.relpath(os.path.join(root, file), self.local_dir)
+                if not self._is_ignored(rel_path):
+                    files_to_hash.append(os.path.join(self.local_dir, rel_path))
+        return files_to_hash
 
-        file_url = f"https://raw.githubusercontent.com/{self.repo_owner}/{self.repo_name}/{self.branch}/{item['path']}"
-        async with session.get(file_url) as response:
-            if response.status != 200:
-                raise Exception(f"Failed to fetch {file_url}: Status {response.status}")
-            content = await response.read()
-            file_hash = hashlib.sha256(content).hexdigest()
-        return item["path"], file_hash
+    async def _get_local_hashes(self):
+        """Asynchronously generates SHA-1 hashes for all non-ignored local files."""
+        if self.local_hashes is not None:
+            return self.local_hashes
+
+        loop = asyncio.get_running_loop()
+        # Run the synchronous file-walking in a thread pool to avoid blocking
+        files_to_hash = await loop.run_in_executor(None, self._collect_files_to_hash_sync)
+        
+        tasks = [self._hash_file_entry(f) for f in files_to_hash]
+        results = await asyncio.gather(*tasks)
+        
+        self.local_hashes = dict(results)
+        return self.local_hashes
+
+    async def _hash_file_entry(self, filepath):
+        """Helper to hash a file and return its relative path and hash."""
+        rel_path = os.path.relpath(filepath, self.local_dir).replace('\\', '/')
+        file_hash = await self._get_git_sha1_hash(filepath)
+        return rel_path, file_hash
 
     async def _get_github_hashes(self):
-        """Fetch all GitHub file hashes (ignoring specified files)."""
-        github_hashes = dict()
+        """
+        Gets all file hashes from GitHub in a single API call.
+        This is the core optimization.
+        """
+        if self.github_hashes is not None:
+            return self.github_hashes
+            
         url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/git/trees/{self.branch}?recursive=1"
         headers = {"Accept": "application/vnd.github.v3+json"}
+        github_hashes = {}
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers) as response:
-                if response.status != 200:
-                    raise Exception(f"GitHub API error: {response.status}")
+                response.raise_for_status() # Raise an exception for bad status codes
                 repo_data = await response.json()
 
-            blob_items = [
-                item for item in repo_data.get("tree", [])
-                if item["type"] == "blob" and os.path.basename(item["path"]) not in self.ignore_files
-            ]
-            tasks = [self._fetch_and_hash_github_file(item, session) for item in blob_items]
-            results = await asyncio.gather(*tasks)
-            for result in results:
-                if result is not None:
-                    path, file_hash = result
-                    github_hashes[path] = file_hash
-
-        return github_hashes
+        for item in repo_data.get("tree", []):
+            if item["type"] == "blob" and not self._is_ignored(item["path"]):
+                github_hashes[item["path"]] = item["sha"]
+        
+        self.github_hashes = github_hashes
+        return self.github_hashes
 
     async def check_integrity(self, user_lang):
-        """Compare local source code with GitHub repository.
-        This method runs only once; subsequent calls return the stored check-state.
-
-        Args:
-            user_lang (str): Language code ('en' or 'fa')
-
-        Returns:
-            list: A list of messages indicating the state of the repository.
         """
-        if self._has_run:
+        Compares local source code with the GitHub repository.
+        Results are cached after the first run.
+        """
+        if self._has_run_check:
             return self._check_state
 
-        responses = list()
+        responses = []
+        try:
+            # Concurrently fetch local and remote hashes
+            print(get_response(ResponseKey.FETCHING_LOCAL_FILES, user_lang))
+            local_hashes_task = asyncio.create_task(self._get_local_hashes())
+            
+            print(get_response(ResponseKey.FETCHING_GITHUB_FILES, user_lang))
+            github_hashes_task = asyncio.create_task(self._get_github_hashes())
 
-        msg = get_response(ResponseKey.FETCHING_LOCAL_FILES, user_lang)
-        print(msg)
-        local_hashes = await self._get_local_hashes()
+            local_hashes, github_hashes = await asyncio.gather(local_hashes_task, github_hashes_task)
+            
+            msg_local = get_response(ResponseKey.LOCAL_FILES_HASHED, user_lang).format(len(local_hashes))
+            print(msg_local)
+            responses.append(msg_local)
 
-        msg = get_response(ResponseKey.LOCAL_FILES_HASHED, user_lang).format(len(local_hashes))
-        print(msg)
-        responses.append(msg)
+            msg_github = get_response(ResponseKey.GITHUB_FILES_HASHED, user_lang, PROJECT_GITHUB_URL=PROJECT_GITHUB_URL, number=len(github_hashes))
+            print(msg_github)
+            responses.append(msg_github)
 
-        msg = get_response(ResponseKey.FETCHING_GITHUB_FILES, user_lang)
-        print(msg)
-        github_hashes = await self._get_github_hashes()
+            if local_hashes == github_hashes:
+                msg = get_response(ResponseKey.SOURCE_IDENTICAL, user_lang)
+                print(msg)
+                responses.append(msg)
+            else:
+                msg = get_response(ResponseKey.SOURCE_DIFFERS, user_lang)
+                print(msg)
+                responses.append(msg)
+                
+                local_files = set(local_hashes.keys())
+                github_files = set(github_hashes.keys())
 
-        msg = get_response(ResponseKey.GITHUB_FILES_HASHED, user_lang, PROJECT_GITHUB_URL=PROJECT_GITHUB_URL, number=len(github_hashes))
-        print(msg)
-        responses.append(msg)
+                for file in sorted(local_files - github_files):
+                    responses.append(get_response(ResponseKey.EXTRA_FILE, user_lang).format(file))
+                
+                for file in sorted(github_files - local_files):
+                    responses.append(get_response(ResponseKey.MISSING_FILE, user_lang).format(file))
+                
+                for file in sorted(local_files & github_files):
+                    if local_hashes[file] != github_hashes[file]:
+                        responses.append(get_response(ResponseKey.MODIFIED_FILE, user_lang).format(file))
 
-        if local_hashes == github_hashes:
-            msg = get_response(ResponseKey.SOURCE_IDENTICAL, user_lang)
-            print(msg)
-            responses.append(msg)
-        else:
-            msg = get_response(ResponseKey.SOURCE_DIFFERS, user_lang)
-            print(msg)
-            responses.append(msg)
-            for file, local_hash in local_hashes.items():
-                if file not in github_hashes:
-                    msg = get_response(ResponseKey.EXTRA_FILE, user_lang).format(file)
-                    print(msg)
-                    responses.append(msg)
-                elif github_hashes.get(file) != local_hash:
-                    msg = get_response(ResponseKey.MODIFIED_FILE, user_lang).format(file)
-                    print(msg)
-                    responses.append(msg)
-            for file in github_hashes:
-                if file not in local_hashes:
-                    msg = get_response(ResponseKey.MISSING_FILE, user_lang).format(file)
-                    print(msg)
-                    responses.append(msg)
+        except aiohttp.ClientError as e:
+            error_msg = f"Network error checking repository: {e}"
+            print(error_msg)
+            responses.append(error_msg)
+        except Exception as e:
+            error_msg = f"An unexpected error occurred: {e}"
+            print(error_msg)
+            responses.append(error_msg)
 
         self._check_state = responses
-        self._has_run = True
+        self._has_run_check = True
         return responses
 
     async def write_line_differences(self):
         """
-        Compute the exact line differences for modified files (present in both local and GitHub,
-        but with differing content) and write them to a file named DIFFERENCES_FILE_NAME.
-        
-        The report follows this structure:
-        
-            file_relative_path
-            +<added line>
-            -<removed line>
-        
-        File paths are relative to the current working directory.
+        Computes and writes exact line differences for modified files to a report file.
+        Reuses cached hashes if available.
         """
-        # Recompute local and GitHub hashes to identify modified files.
-        local_hashes = await self._get_local_hashes()
-        github_hashes = await self._get_github_hashes()
+        # Check if the caches are empty and compute them if needed.
+        if self.local_hashes is None or self.github_hashes is None:
+            await asyncio.gather(self._get_local_hashes(), self._get_github_hashes())
+
+        # Assure the linter that the variables are not None
+        assert self.local_hashes is not None, "Local hashes should not be None here"
+        assert self.github_hashes is not None, "GitHub hashes should not be None here"
 
         modified_files = [
-            file for file in local_hashes
-            if file in github_hashes and local_hashes[file] != github_hashes[file]
+            file for file in self.local_hashes
+            if file in self.github_hashes and self.local_hashes[file] != self.github_hashes[file]
         ]
+
+        if not modified_files:
+            return "IDENTICAL_FILES"
 
         output_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        async with aiohttp.ClientSession() as session:
+            async with aiofiles.open(output_path, "w", encoding="utf-8") as outfile:
+                for file in sorted(modified_files):
+                    local_path = os.path.join(self.local_dir, file)
+                    remote_url = f"https://raw.githubusercontent.com/{self.repo_owner}/{self.repo_name}/{self.branch}/{file}"
+                    
+                    # Fetch local and remote content concurrently
+                    local_content_task = asyncio.create_task(self._read_local_file(local_path))
+                    remote_content_task = asyncio.create_task(self._fetch_remote_file(session, remote_url))
+                    local_content, github_content = await asyncio.gather(local_content_task, remote_content_task)
+                    
+                    diff_lines = list(difflib.ndiff(github_content, local_content))
+                    diff_filtered = [line for line in diff_lines if line.startswith('+ ') or line.startswith('- ')]
 
-        async with aiofiles.open(output_path, "w", encoding="utf-8") as outfile:
-            if not modified_files:
-                return "IDENTICAL_FILES"
-            for file in modified_files:
-                # Compute relative file path from current working directory.
-                local_file_path = os.path.join(self.local_dir, file)
-                rel_path = os.path.relpath(local_file_path, os.getcwd())
+                    if diff_filtered:
+                        rel_path = os.path.relpath(local_path, os.getcwd()).replace('\\', '/')
+                        await outfile.write(f"### {rel_path}\n```diff\n")
+                        await outfile.write("".join(f"{line}\n" for line in diff_filtered))
+                        await outfile.write("```\n\n")
 
-                try:
-                    async with aiofiles.open(local_file_path, "r", encoding="utf-8") as f:
-                        local_content = (await f.read()).splitlines()
-                except Exception:
-                    local_content = list()
+    async def _read_local_file(self, path):
+        """Safely reads local file content."""
+        try:
+            async with aiofiles.open(path, "r", encoding="utf-8") as f:
+                return (await f.read()).splitlines()
+        except IOError:
+            return []
 
-                file_url = f"https://raw.githubusercontent.com/{self.repo_owner}/{self.repo_name}/{self.branch}/{file}"
-                github_content = list()
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(file_url) as response:
-                            if response.status == 200:
-                                text = await response.text()
-                                github_content = text.splitlines()
-                except Exception:
-                    github_content = list()
-
-                diff_lines = list(difflib.ndiff(github_content, local_content))
-                # Filter only the lines that indicate additions or removals.
-                diff_filtered = [line for line in diff_lines if line.startswith('+ ') or line.startswith('- ')]
-
-                if diff_filtered:
-                    # Write the file header and its differences.
-                    await outfile.write(f"### {rel_path}\n")
-                    await outfile.write("```diff\n")
-                    for line in diff_filtered:
-                        await outfile.write(f"{line}\n")
-                    await outfile.write("```\n")
+    async def _fetch_remote_file(self, session, url):
+        """Safely fetches remote file content."""
+        try:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    return (await response.text()).splitlines()
+                return []
+        except aiohttp.ClientError:
+            return []

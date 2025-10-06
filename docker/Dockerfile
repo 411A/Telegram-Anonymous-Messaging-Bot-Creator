@@ -4,6 +4,8 @@ FROM python:3.12-slim
 #* Set environment variables for real-time Python outputs
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+#* To inform github_checker.py that the code is running inside Docker
+ENV DOCKER_ENV=1
 
 #* Set work directory
 WORKDIR /app

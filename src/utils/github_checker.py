@@ -22,8 +22,27 @@ class GitHubChecker:
         self.local_dir = self._get_project_root()
         
         # Initialize ignore lists, including common defaults
-        self.ignore_files = set(ignore_files if ignore_files is not None else [".env", DIFFERENCES_FILE_NAME])
-        self.ignore_folders = set(ignore_folders if ignore_folders is not None else [".venv", "__pycache__", ".git"])
+        default_ignore_files = [".env", DIFFERENCES_FILE_NAME]
+        default_ignore_folders = [".venv", "__pycache__", ".git"]
+        
+        # Add Docker-specific ignores when running in container
+        if os.environ.get("DOCKER_ENV"):
+            # Files that don't exist in Docker container but exist in repo
+            default_ignore_files.extend([
+                ".env.example", ".gitignore", "LICENSE", "README.md", 
+                "docker_entrypoint.sh", "requirements.txt"
+            ])
+            default_ignore_folders.extend(["docker"])
+            
+            # Runtime files that exist in container but not in repo
+            default_ignore_files.extend([
+                "data/DATA.db", "data/DATA.db-shm", "data/DATA.db-wal",
+                "logs/Logs.log", "secret/config.secure"
+            ])
+            default_ignore_folders.extend(["data", "logs", "secret", "diff"])
+        
+        self.ignore_files = set(ignore_files if ignore_files is not None else default_ignore_files)
+        self.ignore_folders = set(ignore_folders if ignore_folders is not None else default_ignore_folders)
         
         self.gitignore_patterns = []
         
@@ -33,16 +52,32 @@ class GitHubChecker:
         self._check_state = None
         self._has_run_check = False
         
-        # Asynchronously load .gitignore patterns upon instantiation
-        asyncio.create_task(self._load_gitignore())
+        # Load .gitignore patterns synchronously (safer when no running event loop)
+        self._load_gitignore_sync()
+
+    def _load_gitignore_sync(self):
+        """Loads and parses patterns from the .gitignore file (synchronous)."""
+        gitignore_path = os.path.join(self.local_dir, ".gitignore")
+        if not os.path.exists(gitignore_path):
+            return
+        try:
+            with open(gitignore_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith('#'):
+                        self.gitignore_patterns.append(stripped)
+        except IOError:
+            # If reading fails, treat as no patterns
+            self.gitignore_patterns = []
 
     async def _load_gitignore(self):
         """Asynchronously loads and parses patterns from the .gitignore file."""
+        # kept for compatibility if someone wants to explicitly call it
         gitignore_path = os.path.join(self.local_dir, ".gitignore")
         if not os.path.exists(gitignore_path):
             return
         
-        async with aiofiles.open(gitignore_path, 'r') as f:
+        async with aiofiles.open(gitignore_path, 'r', encoding="utf-8") as f:
             lines = await f.readlines()
             for line in lines:
                 stripped = line.strip()
@@ -77,7 +112,13 @@ class GitHubChecker:
         # Check against simple ignore lists first
         if os.path.basename(path) in self.ignore_files:
             return True
+        # Also check for full path matches (for specific file paths like data/DATA.db)
+        if path in self.ignore_files:
+            return True
         if any(f"/{folder}/" in f"/{path}/" for folder in self.ignore_folders):
+            return True
+        # Check if path starts with any ignore folder
+        if any(path.startswith(f"{folder}/") for folder in self.ignore_folders):
             return True
             
         # Check against .gitignore patterns
@@ -93,10 +134,15 @@ class GitHubChecker:
         files_to_hash = []
         for root, dirs, files in os.walk(self.local_dir, topdown=True):
             # Prune ignored directories to prevent walking them
-            dirs[:] = [d for d in dirs if not self._is_ignored(os.path.join(os.path.relpath(root, self.local_dir), d))]
+            # Use relative path pieces when checking ignores
+            rel_root = os.path.relpath(root, self.local_dir).replace('\\', '/')
+            if rel_root == '.':
+                rel_root = ''
+            dirs[:] = [d for d in dirs if not self._is_ignored(os.path.join(rel_root, d).lstrip('/'))]
             
             for file in files:
                 rel_path = os.path.relpath(os.path.join(root, file), self.local_dir)
+                rel_path = rel_path.replace('\\', '/')
                 if not self._is_ignored(rel_path):
                     files_to_hash.append(os.path.join(self.local_dir, rel_path))
         return files_to_hash
@@ -230,7 +276,9 @@ class GitHubChecker:
             return "IDENTICAL_FILES"
 
         output_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        dir_name = os.path.dirname(output_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
         
         async with aiohttp.ClientSession() as session:
             async with aiofiles.open(output_path, "w", encoding="utf-8") as outfile:

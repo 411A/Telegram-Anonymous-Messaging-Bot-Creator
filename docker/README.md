@@ -276,6 +276,9 @@ docker logs -f hidego-tgbot
 # Execute commands in container
 docker exec -it hidego-tgbot bash
 
+# If container name is different (from docker compose run)
+docker exec -it $(docker ps --format "table {{.Names}}" | grep hidego-tgbot | head -1) bash
+
 # Stop container
 docker stop hidego-tgbot
 

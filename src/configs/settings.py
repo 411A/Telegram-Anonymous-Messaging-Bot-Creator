@@ -30,6 +30,11 @@ MAX_IN_MEMORY_ACTIVE_BOTS: Final = 100
 # 20 Minutes answer time
 ADMIN_REPLY_TIMEOUT: Final = 60 * 20
 
+# Network timeout settings (in seconds)
+TELEGRAM_REQUEST_TIMEOUT: Final = 30
+TELEGRAM_CONNECTION_TIMEOUT: Final = 10
+TELEGRAM_READ_TIMEOUT: Final = 30
+
 # Separator character
 SEP = '|'
 

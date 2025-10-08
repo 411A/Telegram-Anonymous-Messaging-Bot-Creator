@@ -246,6 +246,18 @@ class ResponseKey(Enum):
         en="Error processing block request",
         fa="خطا در پردازش درخواست بلاک"
     )
+    NETWORK_ERROR_RETRY = Response(
+        en="🌐⚠️ Network connection error. Please try again in a few moments.",
+        fa="🌐⚠️ خطای اتصال شبکه. لطفاً چند لحظه دیگر تلاش کنید."
+    )
+    TIMEOUT_ERROR_RETRY = Response(
+        en="⏰⚠️ Connection timed out. Please try again later.",
+        fa="⏰⚠️ زمان اتصال به پایان رسید. لطفاً بعداً تلاش کنید."
+    )
+    OPERATION_FAILED_NETWORK = Response(
+        en="❌ Operation failed due to network issues. Your data is safe. Please try again.",
+        fa="❌ عملیات به دلیل مشکلات شبکه ناموفق بود. داده‌های شما امن است. لطفاً دوباره تلاش کنید."
+    )
     CREATED_BOT_SHORT_DESCRIPTION = Response(
         en="🤖 Secure & anonymous messaging bot created by @{BOT_CREATOR_USERNAME}",
         fa="🤖 ربات پیام‌رسان امن و ناشناس ایجاد شده توسط @{BOT_CREATOR_USERNAME}"

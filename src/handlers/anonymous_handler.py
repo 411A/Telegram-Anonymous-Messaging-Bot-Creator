@@ -1,8 +1,8 @@
-from telegram import Update, CallbackQuery
+from telegram import Update, CallbackQuery, Message
 from telegram.ext import ContextTypes
-from telegram import Message, InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji
 from telegram.constants import ParseMode
-from telegram.error import Forbidden, BadRequest
+from telegram.error import Forbidden, BadRequest, NetworkError, TimedOut
 from utils.responses import get_response, ResponseKey
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
 from utils.helpers import generate_anonymous_id, check_language_availability
@@ -35,6 +35,49 @@ logger = logging.getLogger(__name__)
 admins_reply_cache = AdminsReplyCache()
 
 #region Helpers
+
+async def safe_edit_message_text(message: Message, text: str, user_lang: str, parse_mode=None, reply_markup=None, fallback_query=None):
+    '''
+    Safely edit a message with proper network error handling.
+    
+    Args:
+        message: The message to edit
+        text: The new text
+        user_lang: User's language for error messages
+        parse_mode: Parse mode for the text
+        reply_markup: Reply markup for the message
+        fallback_query: CallbackQuery to use for fallback notifications
+        
+    Returns:
+        bool: True if successful, False otherwise
+    '''
+    try:
+        await message.edit_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
+        return True
+    except TimedOut as e:
+        logger.warning(f"Timeout editing message:\n{e}")
+        if fallback_query and fallback_query.from_user:
+            try:
+                await fallback_query.answer(get_response(ResponseKey.TIMEOUT_ERROR_RETRY, user_lang), show_alert=True)
+            except Exception:
+                logger.error("Failed to send timeout notification")
+        return False
+    except NetworkError as e:
+        logger.warning(f"Network error editing message:\n{e}")
+        if fallback_query and fallback_query.from_user:
+            try:
+                await fallback_query.answer(get_response(ResponseKey.NETWORK_ERROR_RETRY, user_lang), show_alert=True)
+            except Exception:
+                logger.error("Failed to send network error notification")
+        return False
+    except Exception as e:
+        logger.exception(f"Unexpected error editing message:\n{e}")
+        if fallback_query and fallback_query.from_user:
+            try:
+                await fallback_query.answer(get_response(ResponseKey.OPERATION_FAILED_NETWORK, user_lang), show_alert=True)
+            except Exception:
+                logger.error("Failed to send error notification")
+        return False
 
 def generate_inline_buttons_anonymous(user_lang: str) -> InlineKeyboardMarkup:
     '''
@@ -581,10 +624,26 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_to_message_id=message.message_id,
             parse_mode=ParseMode.HTML
         )
+    except TimedOut as e:
+        logger.warning(f"Timeout sending anonymous options message:\n{e}")
+        try:
+            await message.reply_text(get_response(ResponseKey.TIMEOUT_ERROR_RETRY, user_lang), parse_mode=ParseMode.HTML)
+        except Exception:
+            logger.error("Failed to send timeout error for anonymous options")
+    except NetworkError as e:
+        logger.warning(f"Network error sending anonymous options message:\n{e}")
+        try:
+            await message.reply_text(get_response(ResponseKey.NETWORK_ERROR_RETRY, user_lang), parse_mode=ParseMode.HTML)
+        except Exception:
+            logger.error("Failed to send network error for anonymous options")
     except (BadRequest, Forbidden) as e:
         logger.warning(f"Cannot send anonymous options message:\n{e}")
     except Exception as e:
         logger.error(f"Unexpected error sending anonymous options message:\n{e}")
+        try:
+            await message.reply_text(get_response(ResponseKey.OPERATION_FAILED_NETWORK, user_lang), parse_mode=ParseMode.HTML)
+        except Exception:
+            logger.error("Failed to send generic error for anonymous options")
 #endregion Messages
 
 #region Anon CB
@@ -632,12 +691,24 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     
     # Check if the original message still exists
     if not original_sender_message:
-        await query.message.edit_text(get_response(ResponseKey.USER_ERROR_ORIGINAL_MESSAGE_DELETED, user_lang))
+        await safe_edit_message_text(
+            query.message, 
+            get_response(ResponseKey.USER_ERROR_ORIGINAL_MESSAGE_DELETED, user_lang),
+            user_lang,
+            fallback_query=query
+        )
         logger.warning("User tried to use a callback for a deleted message.")
         return
 
     # Show encryption status message to user
-    await query.message.edit_text(get_response(ResponseKey.ENCRYPTING_MESSAGE, user_lang))
+    if not await safe_edit_message_text(
+        query.message,
+        get_response(ResponseKey.ENCRYPTING_MESSAGE, user_lang),
+        user_lang,
+        fallback_query=query
+    ):
+        # Failed to update UI, but continue processing
+        logger.warning("Failed to show encryption status, continuing anyway")
 
     # Get singleton instances once for better performance
     admin_manager = AdminManager()
@@ -651,7 +722,12 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     admin_id = await admin_manager.get_admin_id_from_bot(bot_username)
     
     if not admin_id:
-        await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+        await safe_edit_message_text(
+            query.message,
+            get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
+            user_lang,
+            fallback_query=query
+        )
         logger.error("handle_anonymous_callback: No admin ID found for bot")
         return
     # 3. Get sender's user_id
@@ -718,19 +794,39 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                         )
                     except Exception as alt_e:
                         logger.error(f"Alternative sending method also failed:\n{alt_e}")
-                        await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                        await safe_edit_message_text(
+                            query.message,
+                            get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
+                            user_lang,
+                            fallback_query=query
+                        )
                         return
                 elif "chat not found" in error_msg:
                     logger.warning("Cannot copy message: admin chat not found")
-                    await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                    await safe_edit_message_text(
+                        query.message,
+                        get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
+                        user_lang,
+                        fallback_query=query
+                    )
                     return
                 else:
                     logger.warning(f"Cannot copy message:\n{error_msg}")
-                    await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                    await safe_edit_message_text(
+                        query.message,
+                        get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
+                        user_lang,
+                        fallback_query=query
+                    )
                     return
             except Exception as e:
                 logger.error(f"Unexpected error during message copy:\n{e}")
-                await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+                await safe_edit_message_text(
+                    query.message,
+                    get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
+                    user_lang,
+                    fallback_query=query
+                )
                 return
             
             try:
@@ -748,10 +844,20 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                 # Still confirm to user since message was copied successfully
             
             # Confirm to user
-            await query.message.edit_text(get_response(ResponseKey.MESSAGE_SENT_NO_HISTORY, user_lang))
+            await safe_edit_message_text(
+                query.message,
+                get_response(ResponseKey.MESSAGE_SENT_NO_HISTORY, user_lang),
+                user_lang,
+                fallback_query=query
+            )
         except Exception as e:
             logger.exception(f"Error in handle_anonymous_callback (no history):\n{e}")
-            await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+            await safe_edit_message_text(
+                query.message,
+                get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
+                user_lang,
+                fallback_query=query
+            )
         
     elif query_data == CBD_ANON_WITH_HISTORY:
         try:
@@ -807,10 +913,20 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                 raise
             
             # Confirm to user
-            await query.message.edit_text(get_response(ResponseKey.MESSAGE_SENT_WITH_HISTORY, user_lang))
+            await safe_edit_message_text(
+                query.message,
+                get_response(ResponseKey.MESSAGE_SENT_WITH_HISTORY, user_lang),
+                user_lang,
+                fallback_query=query
+            )
         except Exception as e:
             logger.exception(f"Error in handle_anonymous_callback (with history):\n{e}")
-            await query.message.edit_text(get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang))
+            await safe_edit_message_text(
+                query.message,
+                get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
+                user_lang,
+                fallback_query=query
+            )
         
     elif query_data == CBD_ANON_FORWARD:
         try:
@@ -927,7 +1043,32 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             keyboard[0].pop(0)
 
         # Update the message with the modified keyboard
-        await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+        try:
+            await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+        except TimedOut as e:
+            logger.warning(f"Timeout error updating message markup:\n{e}")
+            user_lang = check_language_availability(query.from_user.language_code or 'en')
+            try:
+                await query.answer(get_response(ResponseKey.TIMEOUT_ERROR_RETRY, user_lang), show_alert=True)
+            except Exception:
+                logger.error("Failed to send timeout error notification")
+            return
+        except NetworkError as e:
+            logger.warning(f"Network error updating message markup:\n{e}")
+            user_lang = check_language_availability(query.from_user.language_code or 'en')
+            try:
+                await query.answer(get_response(ResponseKey.NETWORK_ERROR_RETRY, user_lang), show_alert=True)
+            except Exception:
+                logger.error("Failed to send network error notification")
+            return
+        except Exception as e:
+            logger.exception(f"Unexpected error updating message markup:\n{e}")
+            user_lang = check_language_availability(query.from_user.language_code or 'en')
+            try:
+                await query.answer(get_response(ResponseKey.OPERATION_FAILED_NETWORK, user_lang), show_alert=True)
+            except Exception:
+                logger.error("Failed to send error notification")
+            return
 
         # Get the full hash from database
         db_manager = DatabaseManager()

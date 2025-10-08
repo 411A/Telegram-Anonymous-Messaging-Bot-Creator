@@ -20,7 +20,7 @@ from telegram.ext import (
     Application, CommandHandler, ContextTypes,
     MessageHandler, CallbackQueryHandler, filters
 )
-from telegram.error import TimedOut
+from telegram.error import TimedOut, NetworkError
 from telegram.constants import ParseMode
 from typing import Dict, List, Optional
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
@@ -49,7 +49,10 @@ from configs.settings import (
     FASTAPI_PORT,
     DEVELOPER_GITHUB_USERNAME,
     DEVELOPER_GITHUB_REPOSITORY_NAME,
-    GITHUB_CHECKER_FILENAME
+    GITHUB_CHECKER_FILENAME,
+    TELEGRAM_REQUEST_TIMEOUT,
+    TELEGRAM_CONNECTION_TIMEOUT,
+    TELEGRAM_READ_TIMEOUT
 )
 import uvicorn
 import logging
@@ -129,7 +132,27 @@ async def main_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"main_start: No effective user ({user}), returning")
         return
     user_lang = check_language_availability(user.language_code or 'en')
-    await message.reply_text(get_response(ResponseKey.WELCOME, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    
+    try:
+        await message.reply_text(get_response(ResponseKey.WELCOME, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    except TimedOut as e:
+        logger.warning(f"Timeout error in main_start: {e}")
+        try:
+            await message.reply_text(get_response(ResponseKey.TIMEOUT_ERROR_RETRY, user_lang), parse_mode=ParseMode.HTML)
+        except Exception:
+            logger.error("Failed to send timeout error message")
+    except NetworkError as e:
+        logger.warning(f"Network error in main_start: {e}")
+        try:
+            await message.reply_text(get_response(ResponseKey.NETWORK_ERROR_RETRY, user_lang), parse_mode=ParseMode.HTML)
+        except Exception:
+            logger.error("Failed to send network error message")
+    except Exception as e:
+        logger.exception(f"Unexpected error in main_start: {e}")
+        try:
+            await message.reply_text(get_response(ResponseKey.OPERATION_FAILED_NETWORK, user_lang), parse_mode=ParseMode.HTML)
+        except Exception:
+            logger.error("Failed to send generic error message")
 
 async def main_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -359,6 +382,11 @@ async def create_and_configure_bot(token: str) -> Application:
             Application.builder()
             .token(token)
             .concurrent_updates(10)
+            .connection_pool_size(256)
+            .pool_timeout(TELEGRAM_REQUEST_TIMEOUT)
+            .connect_timeout(TELEGRAM_CONNECTION_TIMEOUT)
+            .read_timeout(TELEGRAM_READ_TIMEOUT)
+            .write_timeout(TELEGRAM_REQUEST_TIMEOUT)
             .build()
         )
         # Get bot instance
@@ -636,7 +664,16 @@ async def lifespan(app: FastAPI):
     assert MAIN_BOT_TOKEN is not None, "MAIN_BOT_TOKEN must be set"
 
     # Initialize main bot with proper handlers
-    main_app = Application.builder().token(MAIN_BOT_TOKEN).build()
+    main_app = (
+        Application.builder()
+        .token(MAIN_BOT_TOKEN)
+        .connection_pool_size(256)
+        .pool_timeout(TELEGRAM_REQUEST_TIMEOUT)
+        .connect_timeout(TELEGRAM_CONNECTION_TIMEOUT)
+        .read_timeout(TELEGRAM_READ_TIMEOUT)
+        .write_timeout(TELEGRAM_REQUEST_TIMEOUT)
+        .build()
+    )
     main_app.add_handler(CommandHandler('start', main_start))
     main_app.add_handler(CommandHandler('register', register_bot))
     main_app.add_handler(CommandHandler('revoke', revoke_bot))

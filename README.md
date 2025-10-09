@@ -1,3 +1,5 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/411A/Telegram-Anonymous-Messaging-Bot-Creator)
+
 #### 🤖 **Hid**den**Ego** - Telegram Anonymous Messaging Bot Creator 
 A robust solution for creating Telegram bots that empower anonymous messaging with powerful management and secure configurations.
 

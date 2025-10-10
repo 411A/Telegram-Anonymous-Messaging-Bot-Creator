@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 from configs.settings import (
     BTN_EMOJI_NO_HISTORY, BTN_EMOJI_WITH_HISTORY, BTN_EMOJI_FORWARD,
     BTN_EMOJI_BLOCK, BTN_EMOJI_UNBLOCK,
+    DEVELOPER_GITHUB_USERNAME, DEVELOPER_GITHUB_REPOSITORY_NAME,
     PROJECT_GITHUB_URL, DEVELOPER_CONTACT_URL
 )
 
@@ -390,7 +391,8 @@ Some data is only completely hashed upon user interactions (e.g., via callbacks)
 
     ABOUT_COMMAND = Response(
         en=f'''🤖 <b>About the Bot</b><blockquote expandable>
-This bot is fully open-source, and its source code is available on <a href="{PROJECT_GITHUB_URL}">GitHub</a>.  
+This bot is fully open-source, and its source code is available on <a href="{PROJECT_GITHUB_URL}">GitHub</a>.
+You can also explore the detailed project structure and consult an AI about its safety on <a href="https://deepwiki.com/{DEVELOPER_GITHUB_USERNAME}/{DEVELOPER_GITHUB_REPOSITORY_NAME}">DeepWiki</a>.
 It is designed as a <b>zero-knowledge anonymous messaging solution</b>, meaning that no one - not even the developer - can ever access the identity of users or admins.
 Only the minimal encrypted data required to deliver messages is stored, using the ChaCha20-Poly1305 encryption algorithm for confidentiality and authenticity.
 The encrypted data is split into two independent parts through <b>dual control</b>: one part is stored in the database, while the other is held by the user or admin.
@@ -409,6 +411,7 @@ This bot is developed by <a href="https://abditory.vercel.app">Ali Abdi</a>.
 ''',
         fa=f'''🤖 <b>دربارهٔ ربات</b><blockquote expandable>
 این ربات به‌طور کامل متن‌باز است و کد منبع آن در <a href="{PROJECT_GITHUB_URL}">GitHub</a> در دسترس می‌باشد.
+شما همچنین می‌توانید با استفاده از <a href="https://deepwiki.com/{DEVELOPER_GITHUB_USERNAME}/{DEVELOPER_GITHUB_REPOSITORY_NAME}">DeepWiki</a>، ساختار کامل پروژه را بررسی کرده و درباره‌ی میزان ایمنی آن از هوش مصنوعی سؤال بپرسید.
 این ربات به‌عنوان یک <b>راهکار پیام‌رسانی ناشناس با دانش صفر</b> طراحی شده است، به این معنی که هیچ‌کس - حتی توسعه‌دهنده - نمی‌تواند به هویت کاربران یا مدیران دسترسی پیدا کند.
 فقط حداقل داده‌های رمزنگاری شده مورد نیاز برای تحویل پیام‌ها ذخیره می‌شود، که برای حفظ محرمانگی و صحت از الگوریتم رمزنگاری ChaCha20-Poly1305 استفاده می‌شود.
 داده‌های رمزنگاری شده به دو بخش مستقل تقسیم می‌شوند از طریق <b>کنترل دوگانه</b>؛ یک بخش در پایگاه داده ذخیره می‌شود و بخش دیگر نزد کاربر یا مدیر نگه داشته می‌شود.

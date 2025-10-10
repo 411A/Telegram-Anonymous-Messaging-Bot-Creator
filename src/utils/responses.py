@@ -258,6 +258,10 @@ class ResponseKey(Enum):
         en="❌ Operation failed due to network issues. Your data is safe. Please try again.",
         fa="❌ عملیات به دلیل مشکلات شبکه ناموفق بود. داده‌های شما امن است. لطفاً دوباره تلاش کنید."
     )
+    ADMIN_BLOCKED_BOT_ERROR = Response(
+        en="❌ Cannot send message: The admin has blocked this bot. Please contact the bot owner to resolve this issue.",
+        fa="❌ امکان ارسال پیام وجود ندارد: ادمین این ربات را بلاک کرده است. لطفاً با صاحب ربات تماس بگیرید تا این مشکل حل شود."
+    )
     CREATED_BOT_SHORT_DESCRIPTION = Response(
         en="🤖 Secure & anonymous messaging bot created by @{BOT_CREATOR_USERNAME}",
         fa="🤖 ربات پیام‌رسان امن و ناشناس ایجاد شده توسط @{BOT_CREATOR_USERNAME}"

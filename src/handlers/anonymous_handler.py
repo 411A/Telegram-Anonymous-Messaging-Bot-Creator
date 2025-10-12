@@ -548,6 +548,22 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         # Clean up the reply state from cache
                         await admins_reply_cache.remove(user_id)
                         return
+                    except BadRequest as br_e:
+                        error_msg = str(br_e).lower()
+                        if "message to be replied not found" in error_msg:
+                            # Handle case where the original message was deleted
+                            logger.warning("Cannot reply: original message was deleted")
+                            await message.reply_text(
+                                text=get_response(ResponseKey.ADMIN_REPLY_ORIGINAL_MESSAGE_DELETED, user_lang),
+                                quote=True,
+                                parse_mode=ParseMode.HTML
+                            )
+                            # Clean up the reply state from cache
+                            await admins_reply_cache.remove(user_id)
+                            return
+                        else:
+                            # Re-raise other BadRequest errors
+                            raise
 
                     # Handle the wait message
                     wait_msg: Message | None = admin_reply_state.get('wait_msg')

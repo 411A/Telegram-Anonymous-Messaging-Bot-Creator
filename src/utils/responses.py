@@ -256,12 +256,16 @@ class ResponseKey(Enum):
         fa="⏰⚠️ زمان اتصال به پایان رسید. لطفاً بعداً تلاش کنید."
     )
     OPERATION_FAILED_NETWORK = Response(
-        en="❌ Operation failed due to network issues. Your data is safe. Please try again.",
-        fa="❌ عملیات به دلیل مشکلات شبکه ناموفق بود. داده‌های شما امن است. لطفاً دوباره تلاش کنید."
+        en="🤖❌ Operation failed due to network issues. Your data is safe. Please try again.",
+        fa="🤖❌ عملیات به دلیل مشکلات شبکه ناموفق بود. داده‌های شما امن است. لطفاً دوباره تلاش کنید."
     )
     ADMIN_BLOCKED_BOT_ERROR = Response(
-        en="❌ Cannot send message: The admin has blocked this bot. Please contact the bot owner to resolve this issue.",
-        fa="❌ امکان ارسال پیام وجود ندارد: ادمین این ربات را بلاک کرده است. لطفاً با صاحب ربات تماس بگیرید تا این مشکل حل شود."
+        en="🤖❌ Cannot send message: The admin has blocked this bot. Please contact the bot owner to resolve this issue.",
+        fa="🤖❌ امکان ارسال پیام وجود ندارد: ادمین این ربات را بلاک کرده است. لطفاً با صاحب ربات تماس بگیرید تا این مشکل حل شود."
+    )
+    ADMIN_REPLY_ORIGINAL_MESSAGE_DELETED = Response(
+        en="🤖❌ Cannot reply: The original message you were replying to has been deleted. You can reply to another message and if it exists on the user side, we'll send it as a reply.",
+        fa="🤖❌ امکان پاسخ وجود ندارد: پیام اصلی که به آن پاسخ می‌دادید حذف شده است. شما می‌توانید یک پیام دیگر را ریپلای کنید و اگر در سمت کاربر وجود داشته باشد، ما آن را به عنوان پاسخ ارسال خواهیم کرد."
     )
     CREATED_BOT_SHORT_DESCRIPTION = Response(
         en="🤖 Secure & anonymous messaging bot created by @{BOT_CREATOR_USERNAME}",

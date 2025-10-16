@@ -705,10 +705,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
                     # Clean up the reply state from cache
                     await admins_reply_cache.remove(user_id)
-
-                    # Store the encrypted message hash
-                    db_manager = DatabaseManager()
-                    await db_manager.store_partial_hash(read_button_prefix, read_stored_hash, 'reads')
                     
                 except Exception as e:
                     logger.error(f"Failed to send admin reply:\n{str(e)}\nStack trace:", exc_info=True)
@@ -1354,10 +1350,19 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.warning("handle_read_callback: No callback data found, returning")
             return
 
-        # Get prefix and suffix from callback data
+        # IMMEDIATELY answer the callback to stop the loading spinner
+        # This makes the UI feel instant even if processing takes time
+        # DO THIS BEFORE ANY SLOW OPERATIONS (database, decryption, etc)
+        try:
+            await query.answer()
+        except Exception as answer_error:
+            logger.warning(f"Failed to answer callback query:\n{answer_error}")
+            # Continue anyway - the processing is more important
+
+        # Get prefix and suffix from callback data (fast string operation)
         _, prefix, suffix = query_data.split(SEP)
 
-        # Convert keyboard to list of lists for modification
+        # Convert keyboard to list of lists for modification (fast list operation)
         if not query.message.reply_markup or not query.message.reply_markup.inline_keyboard:
             logger.warning("handle_read_callback: No reply markup found, returning")
             return
@@ -1380,45 +1385,22 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             if read_button_found:
                 break
 
-        # Update the message with the modified keyboard
-        try:
-            await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
-        except TimedOut as e:
-            logger.warning(f"Timeout error updating message markup:\n{e}")
-            user_lang = check_language_availability(query.from_user.language_code or 'en')
-            try:
-                await query.answer(get_response(ResponseKey.TIMEOUT_ERROR_RETRY, user_lang), show_alert=True)
-            except Exception:
-                logger.error("Failed to send timeout error notification")
-            return
-        except NetworkError as e:
-            logger.warning(f"Network error updating message markup:\n{e}")
-            user_lang = check_language_availability(query.from_user.language_code or 'en')
-            try:
-                await query.answer(get_response(ResponseKey.NETWORK_ERROR_RETRY, user_lang), show_alert=True)
-            except Exception:
-                logger.error("Failed to send network error notification")
-            return
-        except Exception as e:
-            logger.exception(f"Unexpected error updating message markup:\n{e}")
-            user_lang = check_language_availability(query.from_user.language_code or 'en')
-            try:
-                await query.answer(get_response(ResponseKey.OPERATION_FAILED_NETWORK, user_lang), show_alert=True)
-            except Exception:
-                logger.error("Failed to send error notification")
-            return
-
-        # Get the full hash from database
+        # NOW do the slow database operations (after callback answered)
         db_manager = DatabaseManager()
         encryptor = Encryptor()
         
-        # Get the full hash from database
+        # Fetch the hash from database
         full_encrypted_hash = await db_manager.get_full_hash_by_prefix(prefix, suffix, 'reads')
         
         if not full_encrypted_hash:
+            # Hash not found - still update the keyboard to remove the button
+            try:
+                await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+            except Exception:
+                pass  # Keyboard update failed, but callback was already answered
             return
 
-        # Decrypt the hash to get message details (reuse encryptor instance)
+        # Decrypt the hash to get message details
         decrypted_data = encryptor.decrypt(full_encrypted_hash)
         sender_user_id, message_id, timestamp = decrypted_data.split(SEP)
 
@@ -1426,28 +1408,50 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         sender_user_id = int(sender_user_id)
         message_id = int(message_id)
 
-        try:
-            # Send reaction to mark message as read
-            await context.bot.set_message_reaction(
+        # Create all the async tasks we need to execute
+        tasks = list()
+        
+        # Task 1: Update the keyboard
+        tasks.append(
+            query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+        )
+        
+        # Task 2: Send reaction
+        tasks.append(
+            context.bot.set_message_reaction(
                 chat_id=sender_user_id,
                 message_id=message_id,
                 reaction=[ReactionTypeEmoji(BTN_EMOJI_READ)],
                 is_big=False
             )
-        except Exception as e:
-            if isinstance(e, BadRequest):
-                error_msg = str(e).lower()
-                if "message to react not found" in error_msg:
-                    await query.answer(
-                        get_response(ResponseKey.DELETED_ORIGINAL_MESSAGE_CANT_REACT, check_language_availability(query.from_user.language_code or 'en')),
-                        show_alert=True
-                    )
-
-        # Delete the hash from database
-        await db_manager.remove_partial_hash(prefix, 'reads')
+        )
+        
+        # Task 3: Delete hash from database
+        tasks.append(
+            db_manager.remove_partial_hash(prefix, 'reads')
+        )
+        
+        # Execute all tasks in parallel for maximum speed
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Check results for errors (but don't block - callback already answered)
+        for idx, result in enumerate(results):
+            if isinstance(result, Exception):
+                if idx == 0:
+                    logger.warning(f"Failed to update keyboard:\n{result}")
+                elif idx == 1:
+                    # Check if it's a specific error we care about
+                    if isinstance(result, BadRequest):
+                        error_msg = str(result).lower()
+                        if "message to react not found" in error_msg:
+                            logger.info("Original message was deleted, couldn't add reaction")
+                    else:
+                        logger.warning(f"Failed to send reaction:\n{result}")
+                elif idx == 2:
+                    logger.warning(f"Failed to delete hash from database:\n{result}")
 
     except Exception as e:
-        logger.exception(e)
+        logger.exception(f"Error in handle_read_callback:\n{e}")
 #endregion Read CB
 
 #region Delay CB

@@ -25,7 +25,7 @@ from telegram.constants import ParseMode
 from typing import Dict, List, Optional
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
 from utils.secure_config import get_encryption_key
-from handlers.anonymous_handler import handle_messages, handle_anonymous_callback, handle_read_callback, handle_admin_callback
+from handlers.anonymous_handler import handle_messages, handle_anonymous_callback, handle_read_callback, handle_admin_callback, handle_delay_callback
 from utils.responses import get_response, ResponseKey, get_commands, CommandKey
 from utils.log_utils import setup_logging, patch_uvicorn_logging
 from utils.github_checker import (
@@ -42,6 +42,7 @@ from configs.settings import (
     CBD_ADMIN_BLOCK,
     CBD_ADMIN_ANSWER,
     CBD_ADMIN_CANCEL_ANSWER,
+    CBD_DELAY_INFO,
     MAX_IN_MEMORY_ACTIVE_BOTS,
     MAIN_BOT_TOKEN,
     WEBHOOK_BASE_URL,
@@ -469,7 +470,7 @@ async def create_and_configure_bot(token: str) -> Application:
     application.add_handler(CallbackQueryHandler(handle_anonymous_callback, pattern=f'^({CBD_ANON_NO_HISTORY}|{CBD_ANON_WITH_HISTORY}|{CBD_ANON_FORWARD})'))
     application.add_handler(CallbackQueryHandler(handle_read_callback, pattern=f'^{CBD_READ_MESSAGE}'))
     application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern=f'^({CBD_ADMIN_BLOCK}|{CBD_ADMIN_ANSWER}|{CBD_ADMIN_CANCEL_ANSWER})'))
-
+    application.add_handler(CallbackQueryHandler(handle_delay_callback, pattern=f'^{CBD_DELAY_INFO}'))
     await application.initialize()
     await application.start()
     logger.info(f'Bot {bot_username} started.')

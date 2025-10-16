@@ -23,16 +23,40 @@ from configs.settings import (
     BTN_EMOJI_NO_HISTORY,
     BTN_EMOJI_WITH_HISTORY,
     BTN_EMOJI_FORWARD,
-    ADMIN_REPLY_TIMEOUT
+    ADMIN_REPLY_TIMEOUT,
+    CIRCUIT_BREAKER_CACHE_SIZE,
+    CIRCUIT_BREAKER_TTL,
+    CIRCUIT_BREAKER_THRESHOLD
 )
 import time
 import logging
 import asyncio
+from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
 
 # Initialize the AdminsReplyCache singleton
 admins_reply_cache = AdminsReplyCache()
+
+# Circuit breaker: Track recent failures to prevent error message spam
+# If we fail to send error messages CIRCUIT_BREAKER_THRESHOLD+ times in CIRCUIT_BREAKER_TTL seconds, stop trying
+RECENT_ERROR_SEND_FAILURES = TTLCache(maxsize=CIRCUIT_BREAKER_CACHE_SIZE, ttl=CIRCUIT_BREAKER_TTL)
+
+def should_send_error_message(user_id: int) -> bool:
+    '''
+    Check if we should attempt to send an error message to the user.
+    Returns False if we've recently failed multiple times (circuit breaker open).
+    '''
+    failure_count = RECENT_ERROR_SEND_FAILURES.get(user_id, 0)
+    if failure_count >= CIRCUIT_BREAKER_THRESHOLD:
+        logger.debug(f"Circuit breaker open: {failure_count} recent failures")
+        return False
+    return True
+
+def record_error_send_failure(user_id: int):
+    '''Record that we failed to send an error message to a user.'''
+    current_count = RECENT_ERROR_SEND_FAILURES.get(user_id, 0)
+    RECENT_ERROR_SEND_FAILURES[user_id] = current_count + 1
 
 #region Helpers
 
@@ -641,25 +665,33 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode=ParseMode.HTML
         )
     except TimedOut as e:
+        # Timeout might be temporary - try to inform user once, then give up
         logger.warning(f"Timeout sending anonymous options message:\n{e}")
-        try:
-            await message.reply_text(get_response(ResponseKey.TIMEOUT_ERROR_RETRY, user_lang), parse_mode=ParseMode.HTML)
-        except Exception:
-            logger.error("Failed to send timeout error for anonymous options")
+        if should_send_error_message(user_id):
+            try:
+                await message.reply_text(get_response(ResponseKey.TIMEOUT_ERROR_RETRY, user_lang), parse_mode=ParseMode.HTML)
+            except Exception:
+                logger.error("Failed to send timeout error (network likely down)")
+                record_error_send_failure(user_id)
+        else:
+            logger.debug("Suppressed timeout error message (circuit breaker)")
     except NetworkError as e:
-        logger.warning(f"Network error sending anonymous options message:\n{e}")
-        try:
-            await message.reply_text(get_response(ResponseKey.NETWORK_ERROR_RETRY, user_lang), parse_mode=ParseMode.HTML)
-        except Exception:
-            logger.error("Failed to send network error for anonymous options")
+        # Network error means we can't reach Telegram API - don't waste time trying to send error message
+        logger.warning(f"Network error sending anonymous options:\n{e}")
+        logger.info("Network is down - skipping error notification (will auto-retry when network recovers)")
+        # Don't try to send message - network is clearly broken
+        # User will retry when they see no response
     except (BadRequest, Forbidden) as e:
         logger.warning(f"Cannot send anonymous options message:\n{e}")
     except Exception as e:
         logger.error(f"Unexpected error sending anonymous options message:\n{e}")
-        try:
-            await message.reply_text(get_response(ResponseKey.OPERATION_FAILED_NETWORK, user_lang), parse_mode=ParseMode.HTML)
-        except Exception:
-            logger.error("Failed to send generic error for anonymous options")
+        # For unexpected errors, try to inform user (might not be network-related)
+        if should_send_error_message(user_id):
+            try:
+                await message.reply_text(get_response(ResponseKey.OPERATION_FAILED_NETWORK, user_lang), parse_mode=ParseMode.HTML)
+            except Exception:
+                logger.error("Failed to send generic error for anonymous options")
+                record_error_send_failure(user_id)
 #endregion Messages
 
 #region Anon CB

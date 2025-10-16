@@ -267,6 +267,22 @@ class ResponseKey(Enum):
         en="🤖❌ Cannot reply: The original message you were replying to has been deleted. You can reply to another message and if it exists on the user side, we'll send it as a reply.",
         fa="🤖❌ امکان پاسخ وجود ندارد: پیام اصلی که به آن پاسخ می‌دادید حذف شده است. شما می‌توانید یک پیام دیگر را ریپلای کنید و اگر در سمت کاربر وجود داشته باشد، ما آن را به عنوان پاسخ ارسال خواهیم کرد."
     )
+    MESSAGE_DELAYED_INFO = Response(
+        en="📅 This message was originally sent at {time}, but arrived with a delay due to network or infrastructure issues (the user pressed the send button just now!).",
+        fa="📅 این پیام در زمان {time} ارسال شده، اما به‌دلیل مشکلات شبکه یا زیرساخت با تأخیر دریافت شده است (کاربر همین حالا دکمه ارسال را فشرده است!)."
+    )
+    TIMESTAMP_NOT_AVAILABLE = Response(
+        en="⚠️ Timestamp information not available for this message.",
+        fa="⚠️ اطلاعات زمان برای این پیام در دسترس نیست."
+    )
+    TIMESTAMP_NOT_AVAILABLE_OLD_FORMAT = Response(
+        en="⚠️ Timestamp information not available for this message (old format).",
+        fa="⚠️ اطلاعات زمان برای این پیام در دسترس نیست (فرمت قدیمی)."
+    )
+    TIMESTAMP_RETRIEVAL_FAILED = Response(
+        en="⚠️ Failed to retrieve timestamp information.",
+        fa="⚠️ دریافت اطلاعات زمان با شکست مواجه شد."
+    )
     CREATED_BOT_SHORT_DESCRIPTION = Response(
         en="🤖 Secure & anonymous messaging bot created by @{BOT_CREATOR_USERNAME}",
         fa="🤖 ربات پیام‌رسان امن و ناشناس ایجاد شده توسط @{BOT_CREATOR_USERNAME}"

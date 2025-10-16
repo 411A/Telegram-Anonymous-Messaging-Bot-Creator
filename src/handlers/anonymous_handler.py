@@ -16,6 +16,7 @@ from configs.settings import (
     CBD_ADMIN_BLOCK,
     CBD_ADMIN_ANSWER,
     CBD_ADMIN_CANCEL_ANSWER,
+    CBD_DELAY_INFO,
     BTN_EMOJI_READ,
     BTN_EMOJI_BLOCK,
     BTN_EMOJI_UNBLOCK,
@@ -23,6 +24,7 @@ from configs.settings import (
     BTN_EMOJI_NO_HISTORY,
     BTN_EMOJI_WITH_HISTORY,
     BTN_EMOJI_FORWARD,
+    BTN_EMOJI_DELAY,
     ADMIN_REPLY_TIMEOUT,
     CIRCUIT_BREAKER_CACHE_SIZE,
     CIRCUIT_BREAKER_TTL,
@@ -32,6 +34,8 @@ import time
 import logging
 import asyncio
 from cachetools import TTLCache
+from datetime import datetime, timezone
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,70 @@ def record_error_send_failure(user_id: int):
     '''Record that we failed to send an error message to a user.'''
     current_count = RECENT_ERROR_SEND_FAILURES.get(user_id, 0)
     RECENT_ERROR_SEND_FAILURES[user_id] = current_count + 1
+
+def calculate_message_delay(timestamp_ns: int) -> Optional[int]:
+    '''
+    Calculate message delay in seconds.
+    
+    Args:
+        timestamp_ns: Message timestamp in nanoseconds
+        
+    Returns:
+        Delay in seconds if >= 60 seconds, None otherwise
+    '''
+    try:
+        current_time_ns = time.time_ns()
+        delay_seconds = (current_time_ns - int(timestamp_ns)) / 1_000_000_000
+        return int(delay_seconds) if delay_seconds >= 60 else None
+    except (ValueError, TypeError):
+        return None
+
+def format_delay(delay_seconds: int, lang: str) -> str:
+    '''
+    Format delay into human-readable text.
+    
+    Args:
+        delay_seconds: Delay in seconds
+        lang: Language code ('en' or 'fa')
+        
+    Returns:
+        Formatted delay string
+    '''
+    if delay_seconds < 3600:  # < 1 hour
+        minutes = delay_seconds // 60
+        if lang == 'fa':
+            return f"{BTN_EMOJI_DELAY} {minutes} دقیقه پیش"
+        return f"{BTN_EMOJI_DELAY} {minutes} {'minute' if minutes == 1 else 'minutes'} ago"
+    
+    elif delay_seconds < 86400:  # < 1 day
+        hours = delay_seconds // 3600
+        minutes = (delay_seconds % 3600) // 60
+        if minutes == 0:
+            if lang == 'fa':
+                return f"{BTN_EMOJI_DELAY} {hours} ساعت پیش"
+            return f"{BTN_EMOJI_DELAY} {hours} {'hour' if hours == 1 else 'hours'} ago"
+        else:
+            if lang == 'fa':
+                return f"{BTN_EMOJI_DELAY} {hours} ساعت و {minutes} دقیقه پیش"
+            return f"{BTN_EMOJI_DELAY} {hours}h {minutes}m ago"
+    
+    elif delay_seconds < 604800:  # < 1 week
+        days = delay_seconds // 86400
+        hours = (delay_seconds % 86400) // 3600
+        if hours == 0:
+            if lang == 'fa':
+                return f"{BTN_EMOJI_DELAY} {days} روز پیش"
+            return f"{BTN_EMOJI_DELAY} {days} {'day' if days == 1 else 'days'} ago"
+        else:
+            if lang == 'fa':
+                return f"{BTN_EMOJI_DELAY} {days} روز و {hours} ساعت پیش"
+            return f"{BTN_EMOJI_DELAY} {days}d {hours}h ago"
+    
+    else:  # >= 1 week
+        days = delay_seconds // 86400
+        if lang == 'fa':
+            return f"{BTN_EMOJI_DELAY} {days} روز پیش"
+        return f"{BTN_EMOJI_DELAY} {days} days ago"
 
 #region Helpers
 
@@ -356,27 +424,30 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
             await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
             return
         
-        #! Extract the inline keyboard from the message.
+        # Extract the inline keyboard from the message
         keyboard = query.message.reply_markup.inline_keyboard
 
-        if len(keyboard) > 1 and len(keyboard[0]) > 0 and len(keyboard[1]) > 1:
-            #! First row contains the read button.
-            read_callback_data = keyboard[0][0].callback_data
-            raw_admin_callback = keyboard[1][0].callback_data
-            answer_callback_data = keyboard[1][1].callback_data
-        elif len(keyboard) > 0 and len(keyboard[0]) > 1:
-            #! Only one row is present; assume read is not available.
-            read_callback_data = None
-            #! Expect two buttons: block and answer.
-            raw_admin_callback = keyboard[0][0].callback_data
-            answer_callback_data = keyboard[0][1].callback_data
-        else:
-            await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
-            logger.warning("handle_admin_block: Invalid keyboard structure")
-            return
+        # Dynamically find buttons by callback data pattern (to support delay button)
+        read_callback_data = None
+        delay_button = None  # Store the entire button object to preserve text
+        raw_admin_callback = None
+        answer_callback_data = None
+        
+        for row in keyboard:
+            for button in row:
+                if button.callback_data and isinstance(button.callback_data, str):
+                    if button.callback_data.startswith(f"{CBD_READ_MESSAGE}{SEP}"):
+                        read_callback_data = button.callback_data
+                    elif button.callback_data.startswith(f"{CBD_DELAY_INFO}{SEP}"):
+                        delay_button = button  # Preserve the entire button
+                    elif button.callback_data.startswith(f"{CBD_ADMIN_BLOCK}{SEP}"):
+                        raw_admin_callback = button.callback_data
+                    elif button.callback_data.startswith(f"{CBD_ADMIN_ANSWER}{SEP}"):
+                        answer_callback_data = button.callback_data
 
         if not raw_admin_callback:
             await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
+            logger.warning("handle_admin_block: No block callback data found")
             return
         
         if not isinstance(raw_admin_callback, str):
@@ -425,8 +496,12 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
                         InlineKeyboardButton(f"{BTN_EMOJI_ANSWER} Answer", callback_data=answer_callback_data)
                     ]
                 ]
+                # Preserve Read button if it exists
                 if read_callback_data:
                     new_keyboard.insert(0, [InlineKeyboardButton(f"{BTN_EMOJI_READ} Read", callback_data=read_callback_data)])
+                # Preserve Delay button if it exists (should be first row)
+                if delay_button:
+                    new_keyboard.insert(0, [delay_button])
                 # Update message with new text and keyboard
                 await query.message.edit_text(
                     text=updated_text,
@@ -452,8 +527,12 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
                         InlineKeyboardButton(f"{BTN_EMOJI_ANSWER} Answer", callback_data=answer_callback_data)
                     ]
                 ]
+                # Preserve Read button if it exists
                 if read_callback_data:
                     new_keyboard.insert(0, [InlineKeyboardButton(f"{BTN_EMOJI_READ} Read", callback_data=read_callback_data)])
+                # Preserve Delay button if it exists (should be first row)
+                if delay_button:
+                    new_keyboard.insert(0, [delay_button])
                 # Update message with new text and keyboard
                 await query.message.edit_text(
                     text=updated_text,
@@ -525,8 +604,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 sender_user_id = user.id
                 # 2. Get message_id
                 message_id = message.message_id
-                # 3. Get Unix timestamp with nanoseconds
-                timestamp_ns = time.time_ns()
+                # 3. Get Unix timestamp from when admin actually sent the reply (not when webhook arrived)
+                # Convert to nanoseconds for precision
+                timestamp_ns = int(message.date.timestamp() * 1_000_000_000)
                                 
                 # Construct the callback string for read callback
                 raw_read_callback = f"{sender_user_id}{SEP}{message_id}{SEP}{timestamp_ns}"
@@ -539,11 +619,26 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 read_button_suffix = encrypted_read_callback[-30:]
                 read_callback = f"{CBD_READ_MESSAGE}{SEP}{read_button_prefix}{SEP}{read_button_suffix}"
                 
+                # Database storage for reads
+                await db_manager.store_partial_hash(read_button_prefix, read_stored_hash, 'reads')
+                
                 user_keyboard = [
                     [
                         InlineKeyboardButton(f"{BTN_EMOJI_READ} Read", callback_data=read_callback),
                     ],
                 ]
+                
+                # Add delay button as first row if admin reply arrived with significant delay
+                delay_seconds = calculate_message_delay(timestamp_ns)
+                if delay_seconds is not None:
+                    # Create delay callback data
+                    delay_callback = f"{CBD_DELAY_INFO}{SEP}{read_button_prefix}{SEP}{read_button_suffix}"
+                    # Format delay text based on user's language
+                    delay_text = format_delay(delay_seconds, user_lang)
+                    # Insert delay button as first row
+                    delay_button = InlineKeyboardButton(delay_text, callback_data=delay_callback)
+                    user_keyboard.insert(0, [delay_button])
+                
                 user_markup = InlineKeyboardMarkup(user_keyboard)
 
                 try:
@@ -782,8 +877,9 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     sender_user_id = query.from_user.id
     # 4. Get original message_id
     original_message_id = original_sender_message.message_id
-    # 5. Get Unix timestamp with nanoseconds
-    timestamp_ns = time.time_ns()
+    # 5. Get Unix timestamp from when user actually sent the message (not when webhook arrived)
+    # Convert to nanoseconds for precision
+    timestamp_ns = int(original_sender_message.date.timestamp() * 1_000_000_000)
     # Construct the callback string for read callback
     raw_read_callback = f"{sender_user_id}{SEP}{original_message_id}{SEP}{timestamp_ns}"
     # Construct the callback string for admin-side
@@ -820,6 +916,18 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
             InlineKeyboardButton(f"{BTN_EMOJI_ANSWER} Answer", callback_data=answer_callback)
         ]
     ]
+    
+    # Add delay button as first row if message arrived with significant delay
+    delay_seconds = calculate_message_delay(timestamp_ns)
+    if delay_seconds is not None:
+        # Create delay callback data
+        delay_callback = f"{CBD_DELAY_INFO}{SEP}{admin_button_prefix}{SEP}{admin_button_suffix}"
+        # Format delay text (use 'en' as default for admin messages)
+        delay_text = format_delay(delay_seconds, 'en')
+        # Insert delay button as first row
+        delay_button = InlineKeyboardButton(delay_text, callback_data=delay_callback)
+        admin_keyboard.insert(0, [delay_button])
+    
     admin_markup = InlineKeyboardMarkup(admin_keyboard)
 
     if query_data == CBD_ANON_NO_HISTORY:
@@ -1255,10 +1363,22 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             return
             
         keyboard = list(map(list, query.message.reply_markup.inline_keyboard))
-        # Ensure there's a button to remove
-        if keyboard and keyboard[0]:
-            # Remove the first button from the first row
-            keyboard[0].pop(0)
+        
+        # Find and remove the Read button (not the delay button!)
+        # The Read button has callback_data starting with CBD_READ_MESSAGE
+        read_button_found = False
+        for row_idx, row in enumerate(keyboard):
+            for btn_idx, button in enumerate(row):
+                if button.callback_data and isinstance(button.callback_data, str) and button.callback_data.startswith(f"{CBD_READ_MESSAGE}{SEP}"):
+                    # Found the Read button, remove it
+                    keyboard[row_idx].pop(btn_idx)
+                    read_button_found = True
+                    # If the row is now empty, remove the entire row
+                    if not keyboard[row_idx]:
+                        keyboard.pop(row_idx)
+                    break
+            if read_button_found:
+                break
 
         # Update the message with the modified keyboard
         try:
@@ -1329,3 +1449,92 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.exception(e)
 #endregion Read CB
+
+#region Delay CB
+async def handle_delay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    '''
+    Process delay callback to show exact message timestamp.
+    
+    When user clicks the delay button, shows the exact UTC time when the message
+    was originally sent, along with an explanation that it arrived with delay.
+    
+    Args:
+        update (Update): The update object containing the callback query
+        context (ContextTypes.DEFAULT_TYPE): The context object for the bot
+    
+    Returns:
+        None
+    '''
+    try:
+        query = update.callback_query
+        if not query:
+            logger.warning("handle_delay_callback: No callback query found, returning")
+            return
+        
+        if not query.from_user:
+            logger.warning("handle_delay_callback: No user in callback query, returning")
+            return
+        
+        query_data = query.data
+        if not query_data:
+            logger.warning("handle_delay_callback: No callback data found, returning")
+            return
+
+        user_lang = check_language_availability(query.from_user.language_code or 'en')
+
+        try:
+            # Get prefix and suffix from callback data
+            _, prefix, suffix = query_data.split(SEP)
+        except Exception as e:
+            logger.warning(f"handle_delay_callback: Failed to parse callback data:\n{e}")
+            return
+
+        # Get the full hash from database
+        db_manager = DatabaseManager()
+        encryptor = Encryptor()
+        
+        full_encrypted_hash = await db_manager.get_full_hash_by_prefix(prefix, suffix, 'messages')
+        
+        if not full_encrypted_hash:
+            await query.answer(
+                get_response(ResponseKey.TIMESTAMP_NOT_AVAILABLE, user_lang),
+                show_alert=True
+            )
+            return
+
+        try:
+            # Decrypt the hash to get message details
+            decrypted_data = encryptor.decrypt(full_encrypted_hash)
+            parts = decrypted_data.split(SEP)
+            
+            # Check if timestamp exists (backward compatibility)
+            if len(parts) < 5:
+                await query.answer(
+                    get_response(ResponseKey.TIMESTAMP_NOT_AVAILABLE_OLD_FORMAT, user_lang),
+                    show_alert=True
+                )
+                return
+            
+            timestamp_ns = int(parts[4])
+            
+            # Convert to UTC datetime
+            timestamp_sec = timestamp_ns / 1_000_000_000
+            utc_time = datetime.fromtimestamp(timestamp_sec, tz=timezone.utc)
+            formatted_time = utc_time.strftime("%Y/%m/%d %H:%M:%S UTC")
+            
+            # Show alert with localized message
+            await query.answer(
+                get_response(ResponseKey.MESSAGE_DELAYED_INFO, user_lang, time=formatted_time),
+                show_alert=True
+            )
+            
+        except Exception as decrypt_error:
+            logger.warning(f"handle_delay_callback: Failed to decrypt or process timestamp:\n{decrypt_error}")
+            await query.answer(
+                get_response(ResponseKey.TIMESTAMP_RETRIEVAL_FAILED, user_lang),
+                show_alert=True
+            )
+
+    except Exception as e:
+        logger.exception(f"Error in handle_delay_callback:\n{e}")
+#endregion Delay CB

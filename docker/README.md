@@ -90,8 +90,10 @@ TG_SECRET_TOKEN=your-secret-token-here
 # Server Configuration
 FASTAPI_PORT=8000
 
-# Docker Network Configuration
-DOCKER_NETWORK_IP=172.21.0.0/16
+# Docker Network Configuration (Fixed Network)
+# This MUST match the gateway IP in docker-compose.yml
+# Default: 172.30.0.1/24 (subnet: 172.30.0.0/24)
+DOCKER_NETWORK_IP=172.30.0.1/24
 
 # Logging
 LOG_FILENAME=Logs.log
@@ -127,84 +129,120 @@ ngrok http 8000
 
 ## 🌐 Docker Network Configuration
 
+### Fixed Network Setup
+
+This project uses a **fixed Docker network** to ensure consistent security and prevent issues when multiple Docker projects run on the same host.
+
+**Network Details:**
+- **Network Name**: `hidego-network`
+- **Subnet**: `172.30.0.0/24`
+- **Gateway**: `172.30.0.1`
+- **Driver**: bridge
+
+**Why Fixed Network?**
+- Prevents IP conflicts with other Docker projects
+- Consistent security configuration
+- No need to update `DOCKER_NETWORK_IP` when creating new projects
+- Easier to configure firewall rules
+
 ### DOCKER_NETWORK_IP Field
 
-The `DOCKER_NETWORK_IP` field in your `.env` file configures the Docker network subnet for the bot container:
+The `DOCKER_NETWORK_IP` field in your `.env` file specifies the trusted gateway IP for webhook security:
 
 ```bash
-DOCKER_NETWORK_IP=172.21.0.0/16
+# This MUST match the gateway IP in docker-compose.yml
+DOCKER_NETWORK_IP=172.30.0.1/24
 ```
 
 **Purpose:**
-- Defines the IP range for the Docker bridge network
-- Ensures network isolation and security
-- Prevents conflicts with existing network ranges
-- Used by webhook validation and trusted proxy settings
-
-**Configuration Options:**
-```bash
-# Default (recommended)
-DOCKER_NETWORK_IP=172.21.0.0/16
-
-# Alternative ranges
-DOCKER_NETWORK_IP=172.20.0.0/16
-DOCKER_NETWORK_IP=10.0.0.0/16
-DOCKER_NETWORK_IP=192.168.100.0/24
-```
+- Validates incoming webhook requests from Cloudflare Tunnel or other proxies
+- Ensures only requests from the Docker gateway are accepted
+- Prevents unauthorized webhook access
+- Works with the fixed network configuration in `docker-compose.yml`
 
 **Important Notes:**
-- Choose a range that doesn't conflict with your host network
-- Use CIDR notation (e.g., `/16`, `/24`)
-- Private IP ranges are recommended (10.x.x.x, 172.16-31.x.x, 192.168.x.x)
+- ⚠️ **Must match the gateway IP** defined in `docker-compose.yml` (default: `172.30.0.1`)
+- The `/24` subnet mask allows the entire `172.30.0.0/24` range
+- Changing this requires updating both `.env` and `docker-compose.yml`
 
-### 🔍 Finding Your Docker Network IP
+**Troubleshooting:**
+If you see `403 Forbidden` errors with webhook security blocked:
+1. Check that `DOCKER_NETWORK_IP` matches the gateway in `docker-compose.yml`
+2. Verify with: `docker network inspect docker_hidego-network | grep Gateway`
+3. Update `.env` if the gateway IP is different
 
-**Step 1: Start Docker Container**
-```bash
-cd docker/
-./run.sh start
-# or
-docker compose up -d
+**Custom Network Configuration:**
+If you need to use a different subnet, update both files:
+
+1. **Edit `docker-compose.yml`:**
+```yaml
+networks:
+  hidego-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24      # Your custom subnet
+          gateway: 172.31.0.1          # Your custom gateway
 ```
 
-**Step 2: Inspect the Docker Network**
+2. **Edit `.env`:**
 ```bash
-# Find your network name (usually ends with _hidego-network)
+DOCKER_NETWORK_IP=172.31.0.1/24      # Must match gateway above
+```
+
+**Recommended Subnet Ranges:**
+- `172.30.0.0/24` (default) - Gateway: `172.30.0.1`
+- `172.31.0.0/24` - Gateway: `172.31.0.1`
+- `10.0.0.0/24` - Gateway: `10.0.0.1`
+- `192.168.100.0/24` - Gateway: `192.168.100.1`
+
+### 🔍 Verifying Your Network Configuration
+
+**Check Current Network Settings:**
+```bash
+# List all Docker networks
 docker network ls
 
-# Inspect the network to get the subnet
+# Inspect the hidego network
 docker network inspect docker_hidego-network
-# or if the network name is different:
-docker network inspect <network-name>
+
+# Quick gateway check
+docker network inspect docker_hidego-network | grep -A 5 "IPAM"
 ```
 
-**Step 3: Update .env File**
-Look for the `"Subnet"` field in the network inspection output and copy that value to your `.env` file:
-
-```json
-"IPAM": {
-    "Config": [
-        {
-            "Subnet": "172.21.0.0/16"  # Copy this value
-        }
-    ]
-}
-```
-
-Then update your `.env` file:
+**Verify Settings Match:**
 ```bash
-DOCKER_NETWORK_IP=172.21.0.0/16
+# 1. Check docker-compose.yml gateway
+grep -A 5 "hidego-network" docker-compose.yml
+
+# 2. Check .env setting
+grep "DOCKER_NETWORK_IP" ../.env
+
+# 3. These should match!
 ```
 
-**Step 4: Restart Container**
-```bash
-./run.sh stop
-./run.sh start
-```
+## 🔒 Network Security
 
-### Network Security
+The fixed Docker network configuration provides several security benefits:
 
-The Docker network configuration includes:
+**Security Features:**
+- Webhook validation against known Docker gateway IP
+- Protection from unauthorized webhook sources
+- Consistent security rules across deployments
+- Easy firewall configuration with fixed IPs
+
+**Trusted Sources:**
+The bot accepts webhooks from:
+1. **Telegram's official IP ranges** (automatically validated)
+2. **Docker gateway IP** (configured in `.env`)
+3. **Localhost** (`127.0.0.1`) for testing
+
+**Security Best Practices:**
+- Never expose the bot port directly to the internet
+- Always use a reverse proxy (Cloudflare Tunnel, nginx)
+- Keep `TG_SECRET_TOKEN` secure and unique
+- Regularly update the Docker images
+- Monitor logs for suspicious activity
 - **Isolated bridge network** for container communication
 - **Webhook IP validation** using Telegram's official IP ranges
 - **Proxy trust configuration** for reverse proxy setups
@@ -481,7 +519,81 @@ healthcheck:
 
 ---
 
-## 📞 Support
+## � Troubleshooting
+
+### 403 Forbidden Webhook Security Blocked
+
+**Problem**: You see error `403 Forbidden webhook security blocked: 172.X.X.X` after creating other Docker projects on the same host.
+
+**Cause**: Docker assigns sequential network IP ranges (172.17.0.0/16, 172.18.0.0/16, etc.) to new projects. When you create another Docker project, your bot's network IP changes, but `DOCKER_NETWORK_IP` in `.env` still has the old value.
+
+**Solution**:
+1. Use the fixed network configuration (already implemented in this project)
+2. Verify your network IP matches `.env`:
+   ```bash
+   # Check current network IP
+   docker inspect telegram-bot-network | grep Subnet
+   
+   # Should match DOCKER_NETWORK_IP in .env
+   cat .env | grep DOCKER_NETWORK_IP
+   ```
+3. If mismatched, restart containers to apply fixed network:
+   ```bash
+   cd docker
+   docker-compose down
+   docker-compose up -d
+   ```
+
+### Container Won't Start
+
+**Problem**: Container exits immediately after starting.
+
+**Solutions**:
+- Check logs: `docker-compose logs -f telegram-bot`
+- Verify all required environment variables in `.env`
+- Ensure bot token is valid: `TELEGRAM_BOT_TOKEN=123456:ABC-DEF...`
+- Check file permissions: `chmod 600 .env`
+
+### Network Connection Errors
+
+**Problem**: `httpx.ConnectError` or timeout errors in logs.
+
+**Solutions**:
+- Verify Cloudflare tunnel is running
+- Check webhook URL is accessible: `curl -I https://your-domain.com/webhook`
+- Increase timeout values in `.env`:
+  ```
+  TELEGRAM_REQUEST_TIMEOUT=60
+  TELEGRAM_CONNECTION_TIMEOUT=20
+  TELEGRAM_READ_TIMEOUT=60
+  ```
+- Check Docker network connectivity: `docker network inspect telegram-bot-network`
+
+### Database Permission Issues
+
+**Problem**: `OperationalError: unable to open database file`
+
+**Solutions**:
+- Ensure data directory exists and has correct permissions
+- Check volume mounts in `docker-compose.yml`
+- Try recreating the volume:
+  ```bash
+  docker-compose down -v
+  docker-compose up -d
+  ```
+
+### Port Already in Use
+
+**Problem**: `Bind for 0.0.0.0:8000 failed: port is already allocated`
+
+**Solutions**:
+- Change `FASTAPI_PORT` in `.env` to an available port
+- Check what's using the port: `sudo lsof -i :8000`
+- Stop conflicting service or use different port
+
+---
+
+## �📞 Support
 
 For issues and questions:
 - **GitHub Issues**: [Repository Issues](https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator/issues)

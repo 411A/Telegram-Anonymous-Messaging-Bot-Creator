@@ -35,6 +35,20 @@ TELEGRAM_REQUEST_TIMEOUT: Final = 30
 TELEGRAM_CONNECTION_TIMEOUT: Final = 10
 TELEGRAM_READ_TIMEOUT: Final = 30
 
+# Webhook deduplication settings
+# Maximum number of processed updates to cache
+WEBHOOK_DEDUP_CACHE_SIZE: Final = 10000
+# How long to cache processed update IDs (in seconds)
+WEBHOOK_DEDUP_TTL: Final = 240
+
+# Circuit breaker settings for error message handling
+# Maximum number of recent failures to track per user
+CIRCUIT_BREAKER_CACHE_SIZE: Final = 1000
+# Time window for failure tracking (in seconds)
+CIRCUIT_BREAKER_TTL: Final = 60
+# Number of consecutive failures before circuit opens
+CIRCUIT_BREAKER_THRESHOLD: Final = 3
+
 # Separator character
 SEP = '|'
 

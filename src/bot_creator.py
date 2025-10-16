@@ -52,7 +52,9 @@ from configs.settings import (
     GITHUB_CHECKER_FILENAME,
     TELEGRAM_REQUEST_TIMEOUT,
     TELEGRAM_CONNECTION_TIMEOUT,
-    TELEGRAM_READ_TIMEOUT
+    TELEGRAM_READ_TIMEOUT,
+    WEBHOOK_DEDUP_CACHE_SIZE,
+    WEBHOOK_DEDUP_TTL
 )
 import uvicorn
 import logging
@@ -62,7 +64,7 @@ from pathlib import Path
 import aiofiles
 
 #! Import cachetools for LRUCache and prepare a per-bot lock dict.
-from cachetools import LRUCache
+from cachetools import LRUCache, TTLCache
 from collections import defaultdict
 
 
@@ -79,6 +81,10 @@ GITHUB_CHECK_RESULTS = dict()
 RUNNING_SCRIPT_DATA = None
 GITHUB_CHECKER_DATA = None
 RUNNING_SCRIPT_SINCE = None
+
+# Update deduplication cache: stores update_id for 60 seconds to prevent duplicate processing
+# This prevents webhook retry loops when Telegram resends the same update
+PROCESSED_UPDATES = TTLCache(maxsize=WEBHOOK_DEDUP_CACHE_SIZE, ttl=WEBHOOK_DEDUP_TTL)
 
 #! Define a custom LRUCache that calls a cleanup callback on eviction.
 class ApplicationLRUCache(LRUCache):
@@ -805,10 +811,24 @@ async def webhook_handler(bot_token: str, request: Request):
     update_data = await request.json()
     update_obj = Update.de_json(update_data, application.bot)
 
+    # Deduplicate updates to prevent processing the same webhook multiple times
+    # Telegram may retry webhooks if it doesn't receive a timely response
+    update_id = update_obj.update_id
+    update_key = f"{short_token}:{update_id}"
+    
+    if update_key in PROCESSED_UPDATES:
+        logger.debug(f"Skipping duplicate update {update_id} for bot {short_token}")
+        return {"status": "ok", "message": "duplicate"}
+    
+    # Mark this update as processed (TTL cache will auto-expire after 60 seconds)
+    PROCESSED_UPDATES[update_key] = time.time()
+
     try:
         application.update_queue.put_nowait(update_obj)
     except asyncio.QueueFull:
         logger.warning(f"Update queue full for bot {short_token}")
+        # Remove from processed cache if we couldn't queue it
+        PROCESSED_UPDATES.pop(update_key, None)
         return {"status": "error", "message": "Queue overloaded"}
 
     return {"status": "ok"}

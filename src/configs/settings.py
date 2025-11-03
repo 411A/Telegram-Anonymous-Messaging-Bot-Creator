@@ -84,6 +84,7 @@ CBD_ADMIN_ANSWER: Final = "a"
 CBD_ADMIN_CANCEL_ANSWER: Final = "CancelReplyAnswer"
 CBD_READ_MESSAGE: Final = "r"
 CBD_DELAY_INFO: Final = "d"
+CBD_RETRY_REGISTER: Final = "retry_register"
 
 # Telegram webhook IP ranges
 # https://core.telegram.org/resources/cidr.txt

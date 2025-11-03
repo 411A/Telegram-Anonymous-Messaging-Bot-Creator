@@ -43,6 +43,7 @@ from configs.settings import (
     CBD_ADMIN_ANSWER,
     CBD_ADMIN_CANCEL_ANSWER,
     CBD_DELAY_INFO,
+    CBD_RETRY_REGISTER,
     MAX_IN_MEMORY_ACTIVE_BOTS,
     MAIN_BOT_TOKEN,
     WEBHOOK_BASE_URL,
@@ -187,6 +188,47 @@ async def main_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
         quote=True,
         reply_markup=reply_markup
     )
+
+async def _register_bot_logic(token: str, user, message, user_lang):
+    progress_message = await message.reply_text(get_response(ResponseKey.WAIT_REGISTERING_BOT, user_lang), quote=True, parse_mode=ParseMode.HTML)
+
+    try:
+        application = await create_and_configure_bot(token)
+        new_bot = application.bot
+        bot_info = await new_bot.get_me()
+        bot_username = bot_info.username
+
+        assert admin_manager is not None
+        if await admin_manager.add_admin(token, bot_username, user.id):
+            await progress_message.edit_text(get_response(ResponseKey.ADMIN_REGISTERED))
+        else:
+            await progress_message.edit_text(get_response(ResponseKey.ALREADY_ADMIN))
+
+        active_bots[token] = application
+
+        registration_message = await message.reply_text(
+            text=get_response(ResponseKey.BOT_REGISTERED_SUCCESS, user_lang, username=bot_username, token=token),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    text=get_response(ResponseKey.BOT_REGISTERED_SUCCESS_BUTTON_TEXT, user_lang),
+                    url=f"https://t.me/{bot_username}?start=start"
+                )]
+            ]),
+            parse_mode=ParseMode.HTML
+        )
+        await registration_message.pin()
+
+    except Exception as e:
+        logger.exception(f"Error registering bot:\n{e}")
+        await progress_message.edit_text(
+            get_response(ResponseKey.REGISTER_ERROR_WITH_RETRY, user_lang),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    text=get_response(ResponseKey.RETRY_BUTTON_TEXT, user_lang),
+                    callback_data=CBD_RETRY_REGISTER + token
+                )
+            ]])
+        )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global MAIN_BOT_USERNAME
@@ -591,45 +633,21 @@ async def register_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("register_bot: Token already registered, returning")
         return
 
-    user_id = user.id
+    await _register_bot_logic(token, user, message, user_lang)
 
-    progress_message = None
-    try:
-        # Send initial progress message
-        progress_message = await message.reply_text(get_response(ResponseKey.WAIT_REGISTERING_BOT, user_lang), quote=True, parse_mode=ParseMode.HTML)
-        
-        application = await create_and_configure_bot(token)
-        new_bot = application.bot
-        bot_info = await new_bot.get_me()
-        bot_username = bot_info.username
-
-        assert admin_manager is not None
-        if await admin_manager.add_admin(token, bot_username, user_id):
-            # Update progress message to show success
-            await progress_message.edit_text(get_response(ResponseKey.ADMIN_REGISTERED))
-        else:
-            await progress_message.edit_text(get_response(ResponseKey.ALREADY_ADMIN))
-
-        active_bots[token] = application
-
-        registration_message = await message.reply_text(
-            text=get_response(ResponseKey.BOT_REGISTERED_SUCCESS, user_lang, username=bot_username, token=token),
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    text=get_response(ResponseKey.BOT_REGISTERED_SUCCESS_BUTTON_TEXT, user_lang),
-                    url=f"https://t.me/{bot_username}?start=start"
-                )]
-            ]),
-            parse_mode=ParseMode.HTML
-        )
-        await registration_message.pin()
-
-    except Exception as e:
-        logger.exception(f"Error registering bot:\n{e}")
-        if progress_message:
-            await progress_message.edit_text(f'Error registering bot:\n{str(e)}')
-        else:
-            await message.reply_text(f'Error registering bot:\n{str(e)}', parse_mode=ParseMode.HTML)
+async def handle_retry_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    data = query.data
+    if not data or not data.startswith(CBD_RETRY_REGISTER):
+        return
+    token = data[len(CBD_RETRY_REGISTER):]
+    message = query.message
+    user = query.from_user
+    user_lang = check_language_availability(user.language_code or 'en')
+    await _register_bot_logic(token, user, message, user_lang)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -687,6 +705,7 @@ async def lifespan(app: FastAPI):
     main_app.add_handler(CommandHandler('safetycheck', safetycheck))
     main_app.add_handler(CommandHandler('privacy', privacy))
     main_app.add_handler(CommandHandler('about', main_about))
+    main_app.add_handler(CallbackQueryHandler(handle_retry_register, pattern=f'{CBD_RETRY_REGISTER}'))
 
     try:
         if not MAIN_BOT_USERNAME:

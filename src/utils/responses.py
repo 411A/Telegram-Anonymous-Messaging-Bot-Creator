@@ -139,6 +139,10 @@ class ResponseKey(Enum):
         en="You are already registered as an admin.",
         fa="شما قبلاً به عنوان ادمین ثبت شده‌اید."
     )
+    REGISTER_ERROR_WITH_RETRY = Response(
+        en="❌ Failed to register bot due to network issues. Please try again.\nIf the problem persists, please first ensure your bot token is correct and finally contact the developer.",
+        fa="❌ ثبت ربات به‌دلیل مشکلات شبکه ناموفق بود. لطفاً دوباره تلاش کنید.\nاگر این مشکل پابرجا بود، لطفاً ابتدا از درستیِ توکن ربات خود اطمینان حاصل کنید و در انتها به توسعه‌دهنده پیام دهید."
+    )
     BOT_REGISTERED_SUCCESS = Response(
         en="Successfully registered bot @{username}!\nToken:\n<code>{token}</code>\nTo start receiving messages, you need to launch the bot yourself. Click the button below.",
         fa="ربات @{username} با موفقیت ثبت شد!\nToken:\n<code>{token}</code>\nبرای دریافت پیام‌ها، ابتدا باید خودتان ربات را راه‌اندازی کنید. روی دکمه زیر کلیک کنید."
@@ -146,6 +150,10 @@ class ResponseKey(Enum):
     BOT_REGISTERED_SUCCESS_BUTTON_TEXT = Response(
         en="🟢 Start Using",
         fa="🟢 شروع استفاده"
+    )
+    RETRY_BUTTON_TEXT = Response(
+        en="🔄 Retry",
+        fa="🔄 تلاش مجدد"
     )
     CANT_SEND_TO_SELF = Response(
         en="You cannot send a message to yourself; please click the answer button and then reply.",

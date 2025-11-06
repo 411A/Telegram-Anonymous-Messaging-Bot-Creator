@@ -212,8 +212,8 @@ class ResponseKey(Enum):
         fa="در انتظار پاسخ شما..."
     )
     ADMIN_REPLY_ERROR = Response(
-        en="Error processing your reply request.",
-        fa="خطا در پردازش درخواست پاسخ شما."
+        en="Error processing your reply request. Please try again.",
+        fa="خطا در پردازش درخواست پاسخ شما. لطفاً دوباره تلاش کنید."
     )
     ADMIN_REPLY_TIMEOUT = Response(
         en="⚠️ Reply timeout. Please use the Answer button again.",
@@ -252,8 +252,8 @@ class ResponseKey(Enum):
         fa="آنبلاک کردن کاربر ناموفق بود"
     )
     ADMIN_BLOCK_PROCESS_ERROR = Response(
-        en="Error processing block request",
-        fa="خطا در پردازش درخواست بلاک"
+        en="Error processing block request. Please try again.",
+        fa="خطا در پردازش درخواست بلاک. لطفاً دوباره تلاش کنید."
     )
     NETWORK_ERROR_RETRY = Response(
         en="🌐⚠️ Network connection error. Please try again in a few moments.",

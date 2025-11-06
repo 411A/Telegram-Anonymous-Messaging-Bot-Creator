@@ -249,10 +249,53 @@ async def handle_admin_answer(query: CallbackQuery, admin_id: int, sender_user_i
         # Start a timeout task for cleaning up state after ADMIN_REPLY_TIMEOUT
         asyncio.create_task(reply_timeout_handler(query, admin_id, context))
         # Optionally notify that the admin action is being processed
-        await query.answer(get_response(ResponseKey.ADMIN_REPLY_AWAITING, user_lang), show_alert=False)
+        try:
+            await query.answer(get_response(ResponseKey.ADMIN_REPLY_AWAITING, user_lang), show_alert=False)
+        except BadRequest as br_e:
+            error_msg = str(br_e).lower()
+            if "query is too old" in error_msg or "query id is invalid" in error_msg:
+                # Query expired - this is normal if user takes too long to respond
+                logger.info("Callback query expired for admin, but reply state was set")
+            else:
+                # Re-raise other BadRequest errors
+                raise
+    except BadRequest as br_e:
+        error_msg = str(br_e).lower()
+        if "query is too old" in error_msg or "query id is invalid" in error_msg:
+            # Query already answered or expired - log but don't crash
+            logger.info("Callback query expired/invalid for admin.")
+        else:
+            logger.exception(f"BadRequest error handling admin answer option:\n{br_e}")
+            # Try to notify user via query.answer first
+            try:
+                await query.answer(get_response(ResponseKey.ADMIN_REPLY_ERROR, user_lang), show_alert=True)
+            except BadRequest:
+                # If query.answer fails, try to edit the message as fallback
+                logger.warning("Could not send error via query.answer, trying message edit")
+                try:
+                    if query.message and query.message.reply_to_message:
+                        await query.message.reply_to_message.reply_text(
+                            text=get_response(ResponseKey.ADMIN_REPLY_ERROR, user_lang),
+                            parse_mode=ParseMode.HTML
+                        )
+                except Exception as fallback_err:
+                    logger.error(f"All notification methods failed: {fallback_err}")
     except Exception as e:
         logger.exception(f"Error handling admin answer option:\n{e}")
-        await query.answer(get_response(ResponseKey.ADMIN_REPLY_ERROR, user_lang), show_alert=True)
+        # Try to notify user via query.answer first
+        try:
+            await query.answer(get_response(ResponseKey.ADMIN_REPLY_ERROR, user_lang), show_alert=True)
+        except BadRequest:
+            # If query.answer fails, try to reply to the message as fallback
+            logger.warning("Could not send error via query.answer, trying message reply")
+            try:
+                if query.message and query.message.reply_to_message:
+                    await query.message.reply_to_message.reply_text(
+                        text=get_response(ResponseKey.ADMIN_REPLY_ERROR, user_lang),
+                        parse_mode=ParseMode.HTML
+                    )
+            except Exception as fallback_err:
+                logger.error(f"All notification methods failed: {fallback_err}")
 
 
 async def reply_timeout_handler(query: CallbackQuery, admin_id: int, context: ContextTypes.DEFAULT_TYPE, timeout=ADMIN_REPLY_TIMEOUT):
@@ -343,8 +386,12 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         # Expecting data in format: operation SEP prefix SEP suffix
         operation, prefix, suffix = query_data.split(SEP)
+    except ValueError:
+        logger.warning(f"Invalid callback data format (expected 3 parts separated by '{SEP}'):\n{query_data}")
+        await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
+        return
     except Exception as e:
-        logger.exception(f"Can't extract prefix and suffix:\n{e}", exc_info=True)
+        logger.exception(f"Unexpected error extracting prefix and suffix:\n{e}", exc_info=True)
         return
 
     # Check if there's an ongoing answer operation when trying to start a new one
@@ -545,7 +592,20 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
         
     except Exception as e:
         logger.exception(f"Error handling admin block option\n{e}")
-        await query.answer(get_response(ResponseKey.ADMIN_BLOCK_PROCESS_ERROR, user_lang), show_alert=True)
+        # Try to notify user via query.answer first
+        try:
+            await query.answer(get_response(ResponseKey.ADMIN_BLOCK_PROCESS_ERROR, user_lang), show_alert=True)
+        except BadRequest:
+            # If query.answer fails, try to reply to the message as fallback
+            logger.warning("Could not send error via query.answer, trying message reply")
+            try:
+                if query.message:
+                    await query.message.reply_text(
+                        text=get_response(ResponseKey.ADMIN_BLOCK_PROCESS_ERROR, user_lang),
+                        parse_mode=ParseMode.HTML
+                    )
+            except Exception as fallback_err:
+                logger.error(f"All notification methods failed: {fallback_err}")
 #endregion Admin
 
 #region Messages
@@ -680,6 +740,17 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                             # Clean up the reply state from cache
                             await admins_reply_cache.remove(user_id)
                             return
+                        elif "chat not found" in error_msg:
+                            # Handle case where the user deleted their chat or blocked the bot
+                            logger.warning("Cannot send reply: chat not found.")
+                            await message.reply_text(
+                                text=get_response(ResponseKey.ADMIN_REPLY_FAILED_USER_BLOCKED_BOT, user_lang),
+                                quote=True,
+                                parse_mode=ParseMode.HTML
+                            )
+                            # Clean up the reply state from cache
+                            await admins_reply_cache.remove(user_id)
+                            return
                         else:
                             # Re-raise other BadRequest errors
                             raise
@@ -699,9 +770,14 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                                 )
                             # Delete the wait message
                             await wait_msg.delete()
+                        except BadRequest as br_e:
+                            error_msg = str(br_e).lower()
+                            if "message to delete not found" in error_msg:
+                                logger.debug("Wait message already deleted (user may have deleted it manually)")
+                            else:
+                                logger.warning(f"Failed to handle wait message:\n{br_e}")
                         except Exception as e:
-                            logger.error(f"Failed to handle wait message:\n{e}")
-                            pass
+                            logger.warning(f"Failed to handle wait message:\n{e}")
 
                     # Clean up the reply state from cache
                     await admins_reply_cache.remove(user_id)
@@ -1541,4 +1617,15 @@ async def handle_delay_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     except Exception as e:
         logger.exception(f"Error in handle_delay_callback:\n{e}")
+        # Try to notify user if query and user_lang are available
+        try:
+            query = update.callback_query
+            if query and query.from_user:
+                user_lang = check_language_availability(query.from_user.language_code or 'en')
+                await query.answer(
+                    get_response(ResponseKey.TIMESTAMP_RETRIEVAL_FAILED, user_lang),
+                    show_alert=True
+                )
+        except Exception:
+            logger.error("Failed to notify user about delay callback error")
 #endregion Delay CB

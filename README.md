@@ -1,17 +1,17 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/411A/Telegram-Anonymous-Messaging-Bot-Creator)
 
-#### 🤖 **Hid**den**Ego** - Telegram Anonymous Messaging Bot Creator 
+## 🤖 **Hid**den**Ego** - Telegram Anonymous Messaging Bot Creator 
 A robust solution for creating Telegram bots that empower anonymous messaging with powerful management and secure configurations.
 
 ---
 
-#### 🌟 **Overview**  
+## 🌟 **Overview**  
 This project provides a comprehensive framework for building Telegram bots that handle anonymous messaging. With built-in features such as message forwarding, history management, and administrative controls, it allows you to deploy a secure and feature-rich messaging system. The project is designed with scalability and maintainability in mind, leveraging clear constants and modular code across configurations, handlers, and utility functions.
 
 ---
 
-#### 📦 **Features**  
-- **Anonymous Messaging**: Send messages without revealing your identity.  
+## 📦 **Features**  
+- **Anonymous Messaging**: Send or Forward messages without revealing your identity.  
 - **History Management**: Options for sending messages with or without message history.  
 - **Interactive Controls**: Inline buttons with emojis for actions like forwarding, blocking, and reading messages.  
 - **Webhook Integration**: Seamless integration with Telegram’s webhook API.  
@@ -22,7 +22,7 @@ Users can directly inspect and compare the deployed application with its GitHub 
 
 ---
 
-#### 💰 **Donations**
+## 💰 **Donations**
 If you find this project helpful, you can support its development through donations on the TON blockchain:
 
 💎 Donate via TON:
@@ -35,154 +35,404 @@ UQCGk4IU5nm6dYWjXTx6vSQVOtKO4LQg3m8cRcq1eQo7vhCl
 
 ---
 
-#### 🐳 **Quick Docker Setup**
-For easy deployment, all Docker files are in the `docker/` folder:
+## 📋 **Prerequisites**
+
+- **Python 3.8+** (for native installation)
+- **Docker & Docker Compose** (for containerized deployment)
+- **Telegram Bot Token** from [@BotFather](https://t.me/BotFather)
+- **Domain with Cloudflare** (optional, for production with Cloudflare Tunnel)
+- **ngrok** (optional, for local development webhook testing)
+
+---
+
+## 🚀 **Quick Start**
+
+Choose your deployment method:
+
+### Option 1: 🐳 Docker (Recommended for Production)
+
+**Best for**: Production deployments, easy management, includes Cloudflare Tunnel support
+
 ```bash
+# 1. Clone the repository
+git clone https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator.git
+cd Telegram-Anonymous-Messaging-Bot-Creator
+
+# 2. Configure environment
+cp .env.example .env
+nano .env  # Edit with your bot token and settings
+
+# 3. Start the bot
 cd docker/
 chmod +x run.sh
 ./run.sh start
 ```
-See [docker/README.md](docker/README.md) for complete Docker documentation.
+
+See [docker/README.md](docker/README.md) for complete Docker documentation and [docker/cloudflared/README.md](docker/cloudflared/README.md) for Cloudflare Tunnel setup.
+
+### Option 2: 🐍 Python (Development & Testing)
+
+**Best for**: Local development, testing, quick experiments
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator.git
+cd Telegram-Anonymous-Messaging-Bot-Creator
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Configure environment
+cp .env.example .env
+nano .env  # Edit with your bot token and settings
+
+# 4. Run the bot
+cd src/
+python bot_creator.py
+```
 
 ---
 
-#### 🚀 **Installation**  
-1. **Clone the Repository**:  
-   ```bash
-   git clone https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator.git
-   cd Telegram-Anonymous-Messaging-Bot-Creator
-   ```
-2. **Install Dependencies**:  
-   Ensure you have Python 3.8+ installed, then run:  
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. **Prepare the Database**:  
-   The project uses an SQLite database (`DATA.db`). No additional setup is required, but ensure the file is writable.
+## ⚙️ **Configuration**
+
+### Environment Variables
+
+Copy `.env.example` to `.env` and configure:
+
+```bash
+cp .env.example .env
+```
+
+**Required Settings:**
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `BOT_CREATOR_USERNAME` | Your bot's username | `@YourBot` |
+| `MAIN_BOT_TOKEN` | Telegram Bot API token from @BotFather | `123456:ABC-DEF...` |
+| `WEBHOOK_BASE_URL` | Public HTTPS URL for webhooks | `https://bot.yourdomain.com` |
+| `TG_SECRET_TOKEN` | Secret token for webhook security | `random-secure-string` |
+| `FASTAPI_PORT` | Port for the FastAPI server | `13360` (default) |
+| `LOG_FILENAME` | Log file name | `Logs.log` |
+| `LOGGER_TIMEZONE` | Timezone for logs | `Asia/Tehran` or `UTC` |
+| `DOCKER_NETWORK_IP` | Docker network gateway (for Docker setup) | `172.30.0.1/24` |
+
+**Getting Your Bot Token:**
+1. Message [@BotFather](https://t.me/BotFather) on Telegram
+2. Send `/newbot` and follow the prompts
+3. Copy the provided token to `MAIN_BOT_TOKEN`
+
+**Generating Secret Token:**
+```bash
+# Linux/macOS
+openssl rand -base64 32
+
+# Or use any random string generator
+```
+
+### Master Password
+
+On first run, you'll be prompted to set a **master password** (minimum 12 characters). This password:
+- Encrypts all data in the database
+- Uses **zero-knowledge security** (partial hash storage)
+- Cannot be recovered if lost - keep it safe!
+
+The hashed password is stored in `secret/config.secure`.
 
 ---
 
-#### ⚙️ **Configuration**  
-- **Environment Variables**:  
-  Copy the provided `.env.example` to a new file named `.env` and update the following placeholders with your own credentials and configuration details:
-  - `BOT_CREATOR_USERNAME` – Your bot's username.  
-  - `MAIN_BOT_TOKEN` – Your Telegram Bot API token.  
-  - `WEBHOOK_BASE_URL` – The URL to your webhook endpoint (use _ngrok_ for local development).  
-  - `TG_SECRET_TOKEN` – A secure token for webhook verification.  
-  - `LOG_FILENAME` - Log filename to log errors.
-  - `LOGGER_TIMEZONE` – Set your timezone (e.g., `Asia/Tehran`).  
-  - `FASTAPI_PORT` – The port number on which the API server will run.
-  
-  > **Note**: Ensure all sensitive data (tokens, secret keys) are kept secure and are not exposed publicly.
+## 🔧 **Deployment Guide**
 
-- **Secure Config File:**  
-  The file `config.secure` contains the hashed master password. This secure configuration is managed via `secure_config.py` in the utils directory, ensuring that essential credentials remain protected and are separated from the main codebase.
+### 🧪 Development Setup (Local Testing)
 
----
+#### Using ngrok for Webhook Testing
 
-#### 🔧 **Running the Bot**  
-- **Development**:  
-  Run the main bot creator script:  
-  ```bash
-  python bot_creator.py
-  ```
-  You must set a master password of at least 12 characters. This password is crucial as it encrypts all data stored in the database, ensuring maximum security and privacy.
+[ngrok](https://ngrok.com/) creates a secure tunnel to your local server for webhook testing.
 
-- **Webhook Setup**:  
-  For local testing, use [ngrok](https://ngrok.com/) to tunnel your local server.  
-  ```bash
-  ngrok http 13360
-  ```
-  Update `WEBHOOK_BASE_URL` in your `.env` file with the HTTPS URL provided by ngrok.
+```bash
+# 1. Install ngrok (if not already installed)
+curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+sudo apt update && sudo apt install ngrok
+
+# 2. Start ngrok tunnel
+ngrok http 13360
+
+# 3. Copy the HTTPS URL (e.g., https://xxxx.ngrok-free.app)
+# 4. Update WEBHOOK_BASE_URL in .env with the ngrok URL
+```
+
+#### Running the Bot (Python)
+
+```bash
+cd src/
+python bot_creator.py
+```
+
+On first run, set your master password (min. 12 characters).
 
 ---
 
-#### ☁️ **Deployment with Cloudflare (Production)**  
-For a more secure production deployment, consider using Cloudflare Tunnel. You need a custom domain registered with Cloudflare.
-Follow these steps:
+### 🚀 Production Deployment
 
-1. **Setup Cloudflare Tunnel**:  
-   Create a new tmux session and attach:
-   ```bash
-   # Create and attach to tmux session
-   tmux new -s cloudflare-anontgmsg -d && tmux attach -t cloudflare-anontgmsg
-   
-   # Download and install cloudflared
-   wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
-   chmod +x cloudflared
-   sudo mv cloudflared /usr/local/bin/
-   
-   # Login to Cloudflare
-   cloudflared tunnel login
-   ```
-   > **Note**: After running the login command, click the provided authentication link in your browser. Select your domain and authorize the tunnel.
+#### Method 1: Docker + Cloudflare Tunnel (Recommended)
 
-2. **Create and Configure Tunnel**:  
-   Create a new tunnel and save its configuration:
-   ```bash
-   # Create the tunnel
-   cloudflared tunnel create tg-anontgmsg-webhook
-   
-   # Create config directory if it doesn't exist
-   mkdir -p ~/.cloudflared
-   
-   # Create and edit the configuration file
-   touch ~/.cloudflared/anontgmsg_config.yml
-   ```
-   
-   Add the following to your `~/.cloudflared/anontgmsg_config.yml` file (replace with your values):
-   ```yaml
-   # Replace tunnel ID with the one generated in previous step
-   tunnel: abc123de-f456-789g-hijk-lmnop0123456
-   # Update path to match your system
-   credentials-file: /home/username/.cloudflared/abc123de-f456-789g-hijk-lmnop0123456.json
+This is the **most secure and manageable** production setup.
 
-   ingress:
-     - hostname: webhook.yourdomain.com
-       # Adjust port as needed (Same with FASTAPI_PORT)
-       service: http://localhost:13360
-     - service: http_status:404
-   ```
+##### Step 1: Prepare Cloudflare Tunnel
 
-3. **Route and Start the Tunnel**:  
-   Configure the DNS route and start the tunnel:
-   ```bash
-   # Create DNS route
-   cloudflared tunnel route dns tg-anontgmsg-webhook webhook.yourdomain.com
-   
-   # Start the tunnel inside the tmux
-   cloudflared tunnel --config ~/.cloudflared/anontgmsg_config.yml run tg-anontgmsg-webhook
-   ```
+**Prerequisites:** Domain registered with Cloudflare
 
-   > **Pro Tips**: 
-   > - Use `Ctrl+B, D` to detach from tmux session
-   > - Use `tmux a -t cloudflare-anontgmsg` to reattach
-   > - Remember to update your `.env` file with the new webhook URL
+```bash
+# 1. Install cloudflared
+wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
+chmod +x cloudflared
+sudo mv cloudflared /usr/local/bin/
+
+# 2. Login to Cloudflare
+cloudflared tunnel login
+# Click the authentication link in your browser
+
+# 3. Create tunnel
+cloudflared tunnel create hidego-tgbot
+# Save the tunnel ID from output
+```
+
+##### Step 2: Configure Cloudflare for Docker
+
+```bash
+cd docker/cloudflared/
+
+# Copy your tunnel credentials
+cp ~/.cloudflared/<TUNNEL_ID>.json ./credentials.json
+
+# Create config.yml
+nano config.yml
+```
+
+Add to `config.yml`:
+```yaml
+tunnel: YOUR_TUNNEL_ID_HERE
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - hostname: webhook.yourdomain.com
+    # Use container name and your FASTAPI_PORT
+    service: http://hidego-tgbot:13360
+  - service: http_status:404
+```
+
+```bash
+# Create DNS route
+cloudflared tunnel route dns hidego-tgbot webhook.yourdomain.com
+```
+
+##### Step 3: Update .env
+
+```bash
+cd ../../
+nano .env
+```
+
+Update:
+```bash
+WEBHOOK_BASE_URL=https://webhook.yourdomain.com
+FASTAPI_PORT=13360  # Must match config.yml
+```
+
+##### Step 4: Start Everything
+
+```bash
+cd docker/
+./run.sh start
+```
+
+**Verify tunnel is connected:**
+```bash
+./run.sh tunnel status
+./run.sh tunnel logs
+```
+
+See detailed Docker + Cloudflare guide: [docker/cloudflared/README.md](docker/cloudflared/README.md)
+
+#### Method 2: Docker + nginx + SSL
+
+For deployments with your own reverse proxy:
+
+```bash
+# 1. Configure .env with your domain
+WEBHOOK_BASE_URL=https://yourdomain.com
+
+# 2. Start bot only (without cloudflared)
+cd docker/
+./run.sh start
+
+# 3. Configure nginx to proxy to port 13360
+# See docker/README.md for nginx configuration example
+```
+
+#### Method 3: Python + Cloudflare Tunnel
+
+Traditional setup without Docker:
+
+```bash
+# 1. Create and configure Cloudflare Tunnel
+cloudflared tunnel create hidego-tgbot
+
+# 2. Create ~/.cloudflared/config.yml
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /home/user/.cloudflared/YOUR_TUNNEL_ID.json
+
+ingress:
+  - hostname: webhook.yourdomain.com
+    service: http://localhost:13360
+  - service: http_status:404
+
+# 3. Start tunnel in tmux
+tmux new -s cloudflared
+cloudflared tunnel --config ~/.cloudflared/config.yml run hidego-tgbot
+# Ctrl+B, D to detach
+
+# 4. Run bot
+cd src/
+python bot_creator.py
+```
 
 ---
 
-#### 🔄 **Update from GitHub Source**
+## 📊 Management Commands
+
+### Docker Commands
+
+```bash
+cd docker/
+
+# Start bot (and tunnel if configured)
+./run.sh start
+
+# Start with rebuild
+./run.sh start -b
+
+# Stop everything
+./run.sh stop
+
+# View logs
+./run.sh logs                # Bot logs
+./run.sh tunnel logs         # Tunnel logs
+
+# Tunnel management
+./run.sh tunnel start        # Start tunnel only
+./run.sh tunnel stop         # Stop tunnel only
+./run.sh tunnel status       # Check status
+./run.sh tunnel restart      # Restart tunnel
+
+# Shell access
+./run.sh shell              # Open shell in bot container
+
+# Clean up
+./run.sh cleanup            # Remove all containers
+```
+
+### Python Commands
+
+```bash
+# Run bot
+cd src/
+python bot_creator.py
+
+# Check logs
+tail -f logs/Logs.log
+
+# View database
+sqlite3 data/DATA.db
+```
+
+---
+
+## 🔄 **Updating from GitHub**
+
+Your configuration files are protected by `.gitignore` and won't be overwritten:
 
 ```bash
 cd Telegram-Anonymous-Messaging-Bot-Creator
-```
 
-```bash
-git remote add origin https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator.git
-```
-
-```bash
+# Fetch and update from GitHub
 git fetch origin && git checkout origin/main .
+
+# Your protected files:
+# ✅ .env
+# ✅ docker/cloudflared/config.yml
+# ✅ docker/cloudflared/credentials.json
+# ✅ secret/config.secure
+# ✅ data/, logs/, diff/
 ```
 
 ---
 
-#### 🤝 **Contributing**  
+## 🔍 **Monitoring & Troubleshooting**
+
+### Check Bot Status
+
+```bash
+# Docker
+docker ps | grep hidego-tgbot
+docker logs -f hidego-tgbot
+
+# Python
+tail -f logs/Logs.log
+```
+
+### Check Tunnel Status
+
+```bash
+# Docker
+./run.sh tunnel status
+docker logs hidego-cloudflared | grep "registered tunnel connection"
+
+# Python + tmux
+tmux attach -t cloudflared
+```
+
+### Test Webhook
+
+```bash
+curl https://webhook.yourdomain.com/health
+```
+
+### Common Issues
+
+**Issue**: Bot can't connect to Telegram  
+**Solution**: Check `MAIN_BOT_TOKEN` in `.env` is correct
+
+**Issue**: Webhook not receiving updates  
+**Solution**: 
+- Verify `WEBHOOK_BASE_URL` is publicly accessible
+- Check `TG_SECRET_TOKEN` matches
+- Ensure HTTPS is working
+
+**Issue**: Cloudflare tunnel connection refused  
+**Solution**: 
+- Docker: Verify `service: http://hidego-tgbot:PORT` uses correct port
+- Python: Verify `service: http://localhost:PORT` uses correct port
+- Check `FASTAPI_PORT` in `.env` matches config
+
+**Issue**: Database errors  
+**Solution**: Check `data/` directory has write permissions
+
+---
+
+## 📚 **Documentation**
+
+- [Docker Setup Guide](docker/README.md) - Complete Docker documentation
+- [Cloudflare Tunnel Setup](docker/cloudflared/README.md) - Dockerized Cloudflare Tunnel
+
+---
+
+## 🤝 **Contributing**  
 Contributions are welcome! If you have ideas, bug fixes, or improvements, please open an issue or submit a pull request. Follow standard GitHub practices and ensure your code aligns with the project's guidelines.
 
 ---
 
-#### 📞 **Contact & Support**  
+## 📞 **Contact & Support**  
 For support or any inquiries, please reach out via:  
 - **Telegram**: [Contact the Developer](https://t.me/ContactHydraBot)  
 - **GitHub Repository**: [Telegram Anonymous Messaging Bot Creator](https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator)

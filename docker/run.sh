@@ -72,14 +72,21 @@ case "$COMMAND" in
             docker compose build
         fi
         
-        # Start services based on tunnel configuration
+        # Start services
         if [[ "$TUNNEL_MODE" == "true" ]]; then
             log_info "Starting bot with Cloudflare Tunnel..."
-            docker compose up -d cloudflared
-            docker compose run --rm -p "${FASTAPI_PORT}:${FASTAPI_PORT}" hidego-tgbot
+            docker compose up -d
+            
+            # Attach to bot container for password input
+            log_info "Attaching to bot container for password input..."
+            docker attach hidego-tgbot
         else
-            # Run with explicit port mapping for external access
-            docker compose run --rm -p "${FASTAPI_PORT}:${FASTAPI_PORT}" hidego-tgbot
+            log_info "Starting bot only (no tunnel)..."
+            docker compose up -d hidego-tgbot
+            
+            # Attach to bot container for password input
+            log_info "Attaching to bot container for password input..."
+            docker attach hidego-tgbot
         fi
         ;;
     "stop")

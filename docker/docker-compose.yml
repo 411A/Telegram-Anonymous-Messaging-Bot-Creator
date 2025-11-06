@@ -18,7 +18,7 @@ services:
     
     #* Port mapping - use FASTAPI_PORT from .env
     ports:
-      - "${FASTAPI_PORT:-8000}:${FASTAPI_PORT:-8000}"
+      - "${FASTAPI_PORT:-13360}:${FASTAPI_PORT:-13360}"
     
     #* Volume mounts for persistent data
     volumes:

@@ -91,7 +91,7 @@ See [docker/README.md](docker/README.md) for complete Docker documentation.
 - **Webhook Setup**:  
   For local testing, use [ngrok](https://ngrok.com/) to tunnel your local server.  
   ```bash
-  ngrok http 8000
+  ngrok http 13360
   ```
   Update `WEBHOOK_BASE_URL` in your `.env` file with the HTTPS URL provided by ngrok.
 
@@ -140,7 +140,7 @@ Follow these steps:
    ingress:
      - hostname: webhook.yourdomain.com
        # Adjust port as needed (Same with FASTAPI_PORT)
-       service: http://localhost:8000
+       service: http://localhost:13360
      - service: http_status:404
    ```
 

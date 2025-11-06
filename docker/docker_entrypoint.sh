@@ -5,7 +5,7 @@ set -e
 cd /app/src
 
 # Debug: Show what port we're using
-echo "Starting bot on port: ${FASTAPI_PORT:-8000}"
+echo "Starting bot on port: ${FASTAPI_PORT:-13360}"
 
 # Start the application - get_encryption_key() will handle password prompts
-exec python -m uvicorn bot_creator:app --host 0.0.0.0 --port "${FASTAPI_PORT:-8000}"
+exec python -m uvicorn bot_creator:app --host 0.0.0.0 --port "${FASTAPI_PORT:-13360}"

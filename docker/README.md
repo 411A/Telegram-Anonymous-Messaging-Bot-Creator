@@ -21,7 +21,7 @@ Before starting, ensure you have:
 - **Docker Compose** (v2.0+ recommended)
 - **Linux/macOS/WSL2** (Windows with WSL2 support)
 - **Network access** for downloading dependencies
-- **Port availability** (default: 8000, configurable via `.env`)
+- **Port availability** (default: 13360, configurable via `.env`)
 
 ### Installation Commands
 
@@ -88,7 +88,7 @@ WEBHOOK_BASE_URL=https://your-domain.com
 TG_SECRET_TOKEN=your-secret-token-here
 
 # Server Configuration
-FASTAPI_PORT=8000
+FASTAPI_PORT=13360
 
 # Docker Network Configuration (Fixed Network)
 # This MUST match the gateway IP in docker-compose.yml
@@ -117,7 +117,7 @@ echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/
 sudo apt update && sudo apt install ngrok
 
 # Start tunnel
-ngrok http 8000
+ngrok http 13360
 
 # Copy the HTTPS URL to WEBHOOK_BASE_URL in .env
 ```
@@ -341,7 +341,7 @@ chmod -R 755 data/ logs/ secret/ diff/
 **Port Already in Use:**
 ```bash
 # Check what's using the port
-sudo netstat -tlnp | grep :8000
+sudo netstat -tlnp | grep :13360
 
 # Kill the process or change FASTAPI_PORT in .env
 ```
@@ -496,7 +496,7 @@ server {
     ssl_certificate_key /path/to/private.key;
     
     location / {
-        proxy_pass http://localhost:8000;
+        proxy_pass http://localhost:13360;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -510,7 +510,7 @@ server {
 Add health check to `docker-compose.yml`:
 ```yaml
 healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:${FASTAPI_PORT:-8000}/health"]
+  test: ["CMD", "curl", "-f", "http://localhost:${FASTAPI_PORT:-13360}/health"]
   interval: 30s
   timeout: 10s
   retries: 3
@@ -584,11 +584,11 @@ healthcheck:
 
 ### Port Already in Use
 
-**Problem**: `Bind for 0.0.0.0:8000 failed: port is already allocated`
+**Problem**: `Bind for 0.0.0.0:13360 failed: port is already allocated`
 
 **Solutions**:
 - Change `FASTAPI_PORT` in `.env` to an available port
-- Check what's using the port: `sudo lsof -i :8000`
+- Check what's using the port: `sudo lsof -i :13360`
 - Stop conflicting service or use different port
 
 ---

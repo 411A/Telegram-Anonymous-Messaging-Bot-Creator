@@ -52,7 +52,7 @@ case "$COMMAND" in
         
         # Get port from .env file
         FASTAPI_PORT=$(grep "^FASTAPI_PORT=" ../.env 2>/dev/null | cut -d'=' -f2 | tr -d ' "'"'"'')
-        FASTAPI_PORT=${FASTAPI_PORT:-8000}
+        FASTAPI_PORT=${FASTAPI_PORT:-13360}
         
         log_info "Bot will run on port $FASTAPI_PORT"
         

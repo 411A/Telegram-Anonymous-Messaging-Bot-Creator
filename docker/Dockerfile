@@ -29,7 +29,7 @@ COPY docker/docker_entrypoint.sh .
 RUN chmod +x docker_entrypoint.sh
 
 #* Expose the port (will be configurable via environment)
-EXPOSE ${FASTAPI_PORT:-8000}
+EXPOSE ${FASTAPI_PORT:-13360}
 
 #* Start the application with configurable port
 ENTRYPOINT ["./docker_entrypoint.sh"]

@@ -1,0 +1,7 @@
+# Ignore sensitive Cloudflare credentials
+*.json
+*.pem
+config.yml
+
+# Keep example files
+!config.yml.example

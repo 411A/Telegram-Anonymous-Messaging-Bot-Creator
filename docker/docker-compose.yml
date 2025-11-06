@@ -46,6 +46,32 @@ services:
     #       memory: 512M
     #       cpus: '0.5'
 
+  cloudflared:
+    build:
+      context: cloudflared
+      dockerfile: Dockerfile
+    container_name: hidego-cloudflared
+    
+    #* Restart policy
+    restart: unless-stopped
+    
+    #* Volume mounts for Cloudflare configuration
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+    
+    #* Network configuration - must be on same network as bot
+    networks:
+      - hidego-network
+    
+    #* Depends on bot service
+    depends_on:
+      - hidego-tgbot
+    
+    #* Security options
+    security_opt:
+      - no-new-privileges:true
+
 networks:
   hidego-network:
     driver: bridge

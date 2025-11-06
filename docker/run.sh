@@ -47,6 +47,16 @@ case "$COMMAND" in
             chmod u+w ../diff 2>/dev/null || log_warning "Could not fix diff permissions - you may need to run: sudo chown -R \$USER:\$USER ../diff && chmod u+w ../diff"
         fi
         
+        # Check if cloudflared config exists
+        if [ -f "cloudflared/config.yml" ]; then
+            log_info "Cloudflare Tunnel configuration detected - will start both bot and tunnel"
+            TUNNEL_MODE=true
+        else
+            log_info "No Cloudflare Tunnel config found - starting bot only"
+            log_info "To enable tunnel, see: docker/cloudflared/README.md"
+            TUNNEL_MODE=false
+        fi
+        
         log_info "After entering password, use Ctrl+P then Ctrl+Q to detach"
         log_info "Or close terminal after bot starts - container will keep running"
         
@@ -62,14 +72,22 @@ case "$COMMAND" in
             docker compose build
         fi
         
-        # Run with explicit port mapping to ensure cloudflared can reach it
-        docker compose run --rm -p "${FASTAPI_PORT}:${FASTAPI_PORT}" hidego-tgbot
+        # Start services based on tunnel configuration
+        if [[ "$TUNNEL_MODE" == "true" ]]; then
+            log_info "Starting bot with Cloudflare Tunnel..."
+            docker compose up -d cloudflared
+            docker compose run --rm -p "${FASTAPI_PORT}:${FASTAPI_PORT}" hidego-tgbot
+        else
+            # Run with explicit port mapping for external access
+            docker compose run --rm -p "${FASTAPI_PORT}:${FASTAPI_PORT}" hidego-tgbot
+        fi
         ;;
     "stop")
-        log_info "Stopping HiddenEgo Bot..."
+        log_info "Stopping HiddenEgo Bot and Cloudflare Tunnel..."
         docker compose down
         # Also stop any containers created by 'run' command
         docker stop $(docker ps -q --filter "name=hidego-tgbot") 2>/dev/null || true
+        docker stop $(docker ps -q --filter "name=hidego-cloudflared") 2>/dev/null || true
         ;;
     "logs")
         # Find the running container and show its logs
@@ -91,26 +109,75 @@ case "$COMMAND" in
             docker ps --filter "name=hidego-tgbot"
         fi
         ;;
+    "tunnel")
+        log_info "Managing Cloudflare Tunnel..."
+        if [ ! -f "cloudflared/config.yml" ]; then
+            log_error "Cloudflare Tunnel not configured!"
+            log_info "Please see: docker/cloudflared/README.md for setup instructions"
+            exit 1
+        fi
+        
+        case "${2:-status}" in
+            "start")
+                log_info "Starting Cloudflare Tunnel..."
+                docker compose up -d cloudflared
+                log_success "Tunnel started! Check logs with: ./run.sh tunnel logs"
+                ;;
+            "stop")
+                log_info "Stopping Cloudflare Tunnel..."
+                docker compose stop cloudflared
+                ;;
+            "restart")
+                log_info "Restarting Cloudflare Tunnel..."
+                docker compose restart cloudflared
+                ;;
+            "logs")
+                docker logs -f hidego-cloudflared
+                ;;
+            "status")
+                if docker ps | grep -q hidego-cloudflared; then
+                    log_success "Cloudflare Tunnel is running"
+                    docker logs --tail 10 hidego-cloudflared
+                else
+                    log_warning "Cloudflare Tunnel is not running"
+                fi
+                ;;
+            *)
+                log_error "Unknown tunnel command: ${2}"
+                echo "Usage: ./run.sh tunnel [start|stop|restart|logs|status]"
+                ;;
+        esac
+        ;;
     "cleanup")
         log_info "Cleaning up all containers and rebuilding..."
         docker compose down
         docker stop $(docker ps -q --filter "name=hidego-tgbot") 2>/dev/null || true
         docker rm $(docker ps -aq --filter "name=hidego-tgbot") 2>/dev/null || true
+        docker stop $(docker ps -q --filter "name=hidego-cloudflared") 2>/dev/null || true
+        docker rm $(docker ps -aq --filter "name=hidego-cloudflared") 2>/dev/null || true
         log_success "Cleanup complete. Ready for fresh start."
         ;;
     *)
-        echo "Usage: $0 [-b] [start|stop|logs|shell|cleanup]"
+        echo "Usage: $0 [-b] [start|stop|logs|shell|tunnel|cleanup]"
         echo ""
-        echo "  -b              - Build image before starting"
-        echo "  start (default) - Start the bot"
-        echo "  stop            - Stop the bot"
-        echo "  logs            - Show logs"
-        echo "  shell           - Open shell in container"
-        echo "  cleanup         - Clean up and rebuild everything"
+        echo "  -b                    - Build image before starting"
+        echo "  start (default)       - Start the bot (and tunnel if configured)"
+        echo "  stop                  - Stop the bot and tunnel"
+        echo "  logs                  - Show bot logs"
+        echo "  shell                 - Open shell in bot container"
+        echo "  tunnel [cmd]          - Manage Cloudflare Tunnel"
+        echo "    start               - Start tunnel only"
+        echo "    stop                - Stop tunnel only"
+        echo "    restart             - Restart tunnel"
+        echo "    logs                - Show tunnel logs"
+        echo "    status              - Check tunnel status"
+        echo "  cleanup               - Clean up and rebuild everything"
         echo ""
         echo "Examples:"
-        echo "  $0              # Start with existing image"
-        echo "  $0 start -b     # Build and start"
-        echo "  $0 stop         # Stop the bot"
+        echo "  $0                    # Start bot (and tunnel if configured)"
+        echo "  $0 start -b           # Build and start"
+        echo "  $0 tunnel status      # Check tunnel status"
+        echo "  $0 tunnel logs        # View tunnel logs"
+        echo "  $0 stop               # Stop everything"
         ;;
 esac

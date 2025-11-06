@@ -1,0 +1,13 @@
+# Cloudflare Tunnel Configuration Example
+# Copy this file to config.yml and update with your values
+
+tunnel: YOUR_TUNNEL_ID_HERE
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - hostname: webhook.yourdomain.com
+    # Connect to the bot container by service name
+    # Use the container name from docker-compose.yml
+    service: http://hidego-tgbot:13360
+  # Default rule: all other requests return 404
+  - service: http_status:404

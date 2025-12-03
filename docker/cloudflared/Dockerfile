@@ -9,6 +9,7 @@ WORKDIR /etc/cloudflared
 # COPY config.yml /etc/cloudflared/config.yml
 # COPY credentials.json /etc/cloudflared/credentials.json
 
-# Run cloudflared tunnel
+# Run cloudflared tunnel with reduced logging (only errors and fatal)
+# Log levels: debug, info, warn, error, fatal
 ENTRYPOINT ["cloudflared", "tunnel"]
-CMD ["--config", "/etc/cloudflared/config.yml", "run"]
+CMD ["--config", "/etc/cloudflared/config.yml", "--loglevel", "error", "run"]

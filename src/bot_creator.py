@@ -79,6 +79,7 @@ logger = logging.getLogger(__name__)
 MAIN_BOT_USERNAME = None
 # Global variables for GitHub checker cache and file data
 GITHUB_CHECK_RESULTS = dict()
+GITHUB_CHECK_HASH = None  # Hash of local files to detect changes
 RUNNING_SCRIPT_DATA = None
 GITHUB_CHECKER_DATA = None
 RUNNING_SCRIPT_SINCE = None
@@ -271,30 +272,37 @@ async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.reply_text(get_response(ResponseKey.PRIVACY_COMMAND, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True, quote=True)
 
 async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global GITHUB_CHECK_RESULTS, RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME
+    global GITHUB_CHECK_RESULTS, GITHUB_CHECK_HASH, RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME
     user = update.effective_user
     if not user:
         logger.info(f"safetycheck: No effective user ({user}), returning")
         return
     user_lang = check_language_availability(user.language_code or 'en')
 
-    if user_lang not in GITHUB_CHECK_RESULTS:
-        checker = GitHubChecker(
-            repo_owner=DEVELOPER_GITHUB_USERNAME,
-            repo_name=DEVELOPER_GITHUB_REPOSITORY_NAME,
-            branch='main',
-        )
-        try:
-            # Write differences first since it's used in the check_integrity results
+    checker = GitHubChecker(
+        repo_owner=DEVELOPER_GITHUB_USERNAME,
+        repo_name=DEVELOPER_GITHUB_REPOSITORY_NAME,
+        branch='main',
+    )
+    try:
+        # Get current local hash to detect changes
+        local_hashes = await checker._get_local_hashes()
+        current_hash = hash(frozenset(local_hashes.items()))
+        
+        # Regenerate only if files changed or first run
+        if current_hash != GITHUB_CHECK_HASH:
+            GITHUB_CHECK_HASH = current_hash
+            GITHUB_CHECK_RESULTS.clear()
+        
+        if user_lang not in GITHUB_CHECK_RESULTS:
             await checker.write_line_differences()
-            # Get integrity check results
             GITHUB_CHECK_RESULTS[user_lang] = await checker.check_integrity(user_lang=user_lang)
             if not GITHUB_CHECK_RESULTS[user_lang]:
                 logger.warning("GitHub checker returned empty results")
                 GITHUB_CHECK_RESULTS[user_lang] = ["⚠️ No security issues detected"]
-        except Exception as e:
-            logger.exception(f"GitHub check failed: {str(e)}")
-            GITHUB_CHECK_RESULTS[user_lang] = ["⚠️ Safety check unavailable"]
+    except Exception as e:
+        logger.exception(f"GitHub check failed: {str(e)}")
+        GITHUB_CHECK_RESULTS[user_lang] = ["⚠️ Safety check unavailable"]
 
     try:
         # Verify global variables are initialized

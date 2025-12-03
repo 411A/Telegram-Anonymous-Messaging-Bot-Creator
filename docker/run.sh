@@ -66,10 +66,10 @@ case "$COMMAND" in
         
         log_info "Bot will run on port $FASTAPI_PORT"
         
-        # Build if requested
+        # Rebuild if requested (--no-cache for fresh build)
         if [[ "$BUILD_FLAG" == "true" ]]; then
-            log_info "Building image first..."
-            docker compose build
+            log_info "Rebuilding image (no cache)..."
+            docker compose build --no-cache
         fi
         
         # Start services
@@ -167,7 +167,7 @@ case "$COMMAND" in
     *)
         echo "Usage: $0 [-b] [start|stop|logs|shell|tunnel|cleanup]"
         echo ""
-        echo "  -b                    - Build image before starting"
+        echo "  -b                    - Rebuild image (no cache) before starting"
         echo "  start (default)       - Start the bot (and tunnel if configured)"
         echo "  stop                  - Stop the bot and tunnel"
         echo "  logs                  - Show bot logs"
@@ -178,11 +178,11 @@ case "$COMMAND" in
         echo "    restart             - Restart tunnel"
         echo "    logs                - Show tunnel logs"
         echo "    status              - Check tunnel status"
-        echo "  cleanup               - Clean up and rebuild everything"
+        echo "  cleanup               - Clean up all containers"
         echo ""
         echo "Examples:"
         echo "  $0                    # Start bot (and tunnel if configured)"
-        echo "  $0 start -b           # Build and start"
+        echo "  $0 start -b           # Rebuild and start"
         echo "  $0 tunnel status      # Check tunnel status"
         echo "  $0 tunnel logs        # View tunnel logs"
         echo "  $0 stop               # Stop everything"

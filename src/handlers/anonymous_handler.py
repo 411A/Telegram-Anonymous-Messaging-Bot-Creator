@@ -486,10 +486,9 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             return
 
     try:
-
         db_manager = DatabaseManager()
-        full_encrypted_hash = await db_manager.get_full_hash_by_prefix(prefix, suffix, 'messages')
         encryptor = Encryptor()
+        full_encrypted_hash = await db_manager.get_full_hash_by_prefix(prefix, suffix, 'messages')
 
         if not full_encrypted_hash:
             await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
@@ -1057,12 +1056,6 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     answer_callback = f"{CBD_ADMIN_ANSWER}{SEP}{admin_button_prefix}{SEP}{admin_button_suffix}"
     #print("Answer callback length:", len(answer_callback.encode('utf-8')))
     
-    # Store the encrypted message hash (reuse db_manager instance)
-    # Store the year and month the message sent
-    year_month = time.strftime("%Y-%m")
-    await db_manager.store_partial_hash(admin_button_prefix, admin_stored_hash, 'messages', year_month)
-    await db_manager.store_partial_hash(read_button_prefix, read_stored_hash, 'reads')
-        
     # Generate admin buttons
     admin_keyboard = [
         [
@@ -1087,10 +1080,19 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     
     admin_markup = InlineKeyboardMarkup(admin_keyboard)
 
+    # Store hashes in background (don't wait)
+    year_month = time.strftime("%Y-%m")
+    db_task = asyncio.gather(
+        db_manager.store_partial_hash(admin_button_prefix, admin_stored_hash, 'messages', year_month),
+        db_manager.store_partial_hash(read_button_prefix, read_stored_hash, 'reads'),
+        return_exceptions=True
+    )
+
     if query_data == CBD_ANON_NO_HISTORY:
         try:
             copied_msg, error_key = await safe_copy_message(original_sender_message, admin_id, context)
             if error_key or not copied_msg:
+                await db_task  # Wait for DB before returning on error
                 await safe_edit_message_text(
                     query.message,
                     get_response(getattr(ResponseKey, error_key or "ERROR_SENDING_MESSAGE"), user_lang),
@@ -1137,6 +1139,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
             
             copied_msg, error_key = await safe_copy_message(original_sender_message, admin_id, context, anon_id)
             if error_key or not copied_msg:
+                await db_task
                 await safe_edit_message_text(
                     query.message,
                     get_response(getattr(ResponseKey, error_key or "ERROR_SENDING_MESSAGE"), user_lang),
@@ -1182,6 +1185,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
             
             forwarded_msg, error_key = await safe_forward_message(original_sender_message, admin_id, context, sender_name)
             if error_key or not forwarded_msg:
+                await db_task
                 await safe_edit_message_text(
                     query.message,
                     get_response(getattr(ResponseKey, error_key or "ERROR_SENDING_MESSAGE"), user_lang),
@@ -1221,6 +1225,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
         
     else:
         # Handle unknown callback data
+        await db_task
         await safe_edit_message_text(
             query.message,
             get_response(ResponseKey.ERROR_SENDING, user_lang),

@@ -21,7 +21,7 @@ from telegram.ext import (
 )
 from telegram.error import TimedOut, NetworkError
 from telegram.constants import ParseMode
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
 from utils.secure_config import get_encryption_key
 from handlers.anonymous_handler import handle_messages, handle_anonymous_callback, handle_read_callback, handle_admin_callback, handle_delay_callback
@@ -87,6 +87,10 @@ RUNNING_SCRIPT_SINCE = None
 # Update deduplication cache: stores update_id for 60 seconds to prevent duplicate processing
 # This prevents webhook retry loops when Telegram resends the same update
 PROCESSED_UPDATES = TTLCache(maxsize=WEBHOOK_DEDUP_CACHE_SIZE, ttl=WEBHOOK_DEDUP_TTL)
+
+# Pre-parse IP networks at startup for faster webhook validation
+TELEGRAM_IP_NETWORKS = [ipaddress.ip_network(net) for net in TELEGRAM_IP_RANGES]
+TRUSTED_PROXY_NETWORKS = [ipaddress.ip_network(net, strict=False) if isinstance(net, str) else net for net in TRUSTED_PROXY_CIDRS]
 
 #! Define a custom LRUCache that calls a cleanup callback on eviction.
 class ApplicationLRUCache(LRUCache):
@@ -728,100 +732,83 @@ logger.warning("Starting FastAPI app...")
 app = FastAPI(lifespan=lifespan)
 logger.warning("FastAPI initialized.")
 
+def _parse_ip(ip_str: Optional[str]) -> Optional[ipaddress._BaseAddress]:
+    """Parse IP address from string, handling IPv6 brackets and port suffixes."""
+    if not ip_str:
+        return None
+    s = ip_str.strip()
+    if s.startswith('[') and ']' in s:
+        s = s.split(']')[0].lstrip('[')
+    elif ':' in s and s.count(':') == 1:
+        s = s.split(':')[0]
+    try:
+        return ipaddress.ip_address(s)
+    except ValueError:
+        return None
+
 @app.post('/webhook/{bot_token}')
 async def webhook_handler(bot_token: str, request: Request):
-    def is_telegram_ip(ip_str: str, networks: List[str]) -> bool:
-        try:
-            ip = ipaddress.ip_address(ip_str)
-            return any(ip in ipaddress.ip_network(net) for net in networks)
-        except ValueError:
-            return False
-
-    def _parse_ip(ip_str: Optional[str]) -> Optional[ipaddress._BaseAddress]:
-        if not ip_str:
-            return None
-        s = ip_str.strip()
-        if s.startswith('[') and ']' in s:
-            s = s.split(']')[0].lstrip('[')
-        elif ':' in s and s.count(':') == 1:
-            s = s.split(':')[0]
-        try:
-            return ipaddress.ip_address(s)
-        except ValueError:
-            return None
-
-    client_host = request.client.host if request.client else None
     short_token = shorten_token(bot_token)
     
-    if not client_host:
-        logger.warning(f"Webhook access denied for {short_token}: Invalid client")
-        raise HTTPException(status_code=403, detail="Access denied: Invalid client")
-    
+    # Fast path: validate secret token first (cheapest check)
     received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
     if received_secret != TG_SECRET_TOKEN:
-        logger.warning(f"Webhook access denied for {short_token}: Invalid secret token from {client_host}")
         raise HTTPException(status_code=403, detail="Invalid secret token")
     
+    # Parse request body early for dedup check
+    update_data = await request.json()
+    update_id = update_data.get("update_id")
+    if update_id:
+        update_key = f"{short_token}:{update_id}"
+        if update_key in PROCESSED_UPDATES:
+            return {"status": "ok", "message": "duplicate"}
+        PROCESSED_UPDATES[update_key] = True
+    
+    # IP validation (use pre-parsed networks)
+    client_host = request.client.host if request.client else None
+    if not client_host:
+        raise HTTPException(status_code=403, detail="Access denied: Invalid client")
+    
     peer_ip = _parse_ip(client_host)
-    effective_ip: Optional[str] = None
-    if peer_ip:
-        trusted = any(
-            peer_ip in (net if not isinstance(net, str) else ipaddress.ip_network(net, strict=False))
-            for net in TRUSTED_PROXY_CIDRS
-        )
-        if trusted:
-            xff = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
-            if xff:
-                first = xff.split(",")[0].strip()
-                parsed = _parse_ip(first)
-                if parsed:
-                    effective_ip = str(parsed)
-    if effective_ip is None and peer_ip is not None:
-        effective_ip = str(peer_ip)
-
-    is_telegram = is_telegram_ip(effective_ip, TELEGRAM_IP_RANGES) if effective_ip else False
-    is_localhost = effective_ip in ['127.0.0.1', '::1']
-    is_trusted_proxy = False
+    effective_ip: Optional[ipaddress._BaseAddress] = None
+    
+    if peer_ip and any(peer_ip in net for net in TRUSTED_PROXY_NETWORKS):
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            effective_ip = _parse_ip(xff.split(",")[0].strip())
+    
+    if effective_ip is None:
+        effective_ip = peer_ip
+    
     if effective_ip:
-        ip_obj = ipaddress.ip_address(effective_ip)
-        is_trusted_proxy = any(
-            ip_obj in (net if not isinstance(net, str) else ipaddress.ip_network(net, strict=False))
-            for net in TRUSTED_PROXY_CIDRS
+        is_allowed = (
+            effective_ip in (ipaddress.ip_address('127.0.0.1'), ipaddress.ip_address('::1')) or
+            any(effective_ip in net for net in TELEGRAM_IP_NETWORKS) or
+            any(effective_ip in net for net in TRUSTED_PROXY_NETWORKS)
         )
-
-    if not (is_telegram or is_localhost or is_trusted_proxy):
-        logger.warning(f"Webhook access denied for {short_token}: Suspicious IP {client_host} with valid token")
-        raise HTTPException(status_code=403, detail="Access denied: Suspicious origin")
-
+        if not is_allowed:
+            logger.warning(f"Webhook denied for {short_token}: IP {effective_ip}")
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get or create bot application
     try:
         application = await get_application(bot_token)
     except Exception as e:
-        logger.error(f"Bot application creation failed for {short_token}: {type(e).__name__}")
+        logger.error(f"Bot creation failed for {short_token}: {type(e).__name__}")
+        if update_id:
+            PROCESSED_UPDATES.pop(f"{short_token}:{update_id}", None)
         return {"status": "error", "message": "Bot creation failed"}
-
-    update_data = await request.json()
+    
+    # Queue update for processing
     update_obj = Update.de_json(update_data, application.bot)
-
-    # Deduplicate updates to prevent processing the same webhook multiple times
-    # Telegram may retry webhooks if it doesn't receive a timely response
-    update_id = update_obj.update_id
-    update_key = f"{short_token}:{update_id}"
-    
-    if update_key in PROCESSED_UPDATES:
-        logger.debug(f"Skipping duplicate update {update_id} for bot {short_token}")
-        return {"status": "ok", "message": "duplicate"}
-    
-    # Mark this update as processed (TTL cache will auto-expire after 60 seconds)
-    PROCESSED_UPDATES[update_key] = time.time()
-
     try:
         application.update_queue.put_nowait(update_obj)
     except asyncio.QueueFull:
-        logger.warning(f"Update queue full for bot {short_token}")
-        # Remove from processed cache if we couldn't queue it
-        PROCESSED_UPDATES.pop(update_key, None)
+        logger.warning(f"Queue full for bot {short_token}")
+        if update_id:
+            PROCESSED_UPDATES.pop(f"{short_token}:{update_id}", None)
         return {"status": "error", "message": "Queue overloaded"}
-
+    
     return {"status": "ok"}
 
 app.add_middleware(CORSMiddleware, **CORS_SETTINGS)

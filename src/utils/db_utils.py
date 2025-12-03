@@ -81,15 +81,9 @@ class DatabaseManager:
                     partial_hash TEXT
                 )
             """)
-            await conn.execute("PRAGMA journal_mode=WAL;")
-            # 64MB cache
-            await conn.execute("PRAGMA cache_size=-64000;")
-            await conn.execute("PRAGMA synchronous=NORMAL;")
-            # Store temp tables in memory
-            await conn.execute("PRAGMA temp_store=MEMORY;")
-            # Handle contention when the database is locked by another connection, wait up to 5000ms
+            # Handle contention when the database is locked
             await conn.execute("PRAGMA busy_timeout=5000;")
-            # Optimized indexes for faster queries
+            # Create optimized indexes for faster queries
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_aid ON admins(admin_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_bu_admins ON admins(bot_username)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_bt ON admins(bot_token)")
@@ -99,7 +93,6 @@ class DatabaseManager:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_uib ON blocks(blocked_user_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_bu_blocks ON blocks(bot_username)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_composite_blocks ON blocks(blocked_user_id, bot_username)")
-
             await conn.commit()
     async def get_full_hash_by_prefix(self, prefix: str, suffix: str, table_name: str) -> Optional[str]:
         """Retrieve and reconstruct the full hash using prefix and suffix.

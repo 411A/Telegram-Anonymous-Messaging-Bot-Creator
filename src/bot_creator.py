@@ -14,7 +14,6 @@ import ipaddress
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer
 from telegram import Bot, Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaDocument
 from telegram.ext import (
     Application, CommandHandler, ContextTypes,
@@ -117,13 +116,29 @@ async def cleanup_application(token: str, application: Application):
     except Exception as e:
         logger.exception(f"Error shutting down bot {short_token} on eviction:\n{e}")
 
+async def _retry_async_call(coro_func, short_token: str, operation: str, max_retries: int = 3):
+    """Execute an async coroutine with retry logic for TimedOut errors."""
+    retry_delay = 2
+    for attempt in range(max_retries):
+        try:
+            return await coro_func()
+        except TimedOut:
+            if attempt < max_retries - 1:
+                logger.warning(f"Timeout {operation} for {short_token}, attempt {attempt + 1}/{max_retries}, retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                logger.error(f"Failed to {operation} for {short_token} after {max_retries} attempts due to timeout")
+                raise
+        except Exception as e:
+            logger.error(f"Failed to {operation} for {short_token}: {type(e).__name__}")
+            raise
+
 # Global LRU cache to store active bot applications.
 active_bots = ApplicationLRUCache(maxsize=MAX_IN_MEMORY_ACTIVE_BOTS, on_evicted=cleanup_application)
 
 #! Dictionary to hold per-bot locks to avoid concurrent reinitializations.
 app_creation_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-
-security = HTTPBearer()
 
 # Global variables to be initialized in the lifespan context
 db_manager: Optional[DatabaseManager] = None
@@ -398,23 +413,14 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def configure_bot_interface(bot: Bot, bot_username: str):
     """Configure bot settings including description and commands."""
     try:
-        # Set bot description
-        await bot.set_my_short_description(
-            short_description=get_response(ResponseKey.CREATED_BOT_SHORT_DESCRIPTION, 'en', BOT_CREATOR_USERNAME=MAIN_BOT_USERNAME),
-            language_code='en'
-        )
-        await bot.set_my_short_description(
-            short_description=get_response(ResponseKey.CREATED_BOT_SHORT_DESCRIPTION, 'fa', BOT_CREATOR_USERNAME=MAIN_BOT_USERNAME),
-            language_code='fa'
-        )
-        
-        # Set bot commands with proper language code
-        en_commands = get_commands(CommandKey.CREATED_BOT_COMMANDS, 'en')
-        fa_commands = get_commands(CommandKey.CREATED_BOT_COMMANDS, 'fa')
-        en_bot_commands = [BotCommand(command=cmd['command'], description=cmd['description']) for cmd in en_commands]
-        fa_bot_commands = [BotCommand(command=cmd['command'], description=cmd['description']) for cmd in fa_commands]
-        await bot.set_my_commands(commands=en_bot_commands, language_code='en')
-        await bot.set_my_commands(commands=fa_bot_commands, language_code='fa')
+        for lang in ('en', 'fa'):
+            await bot.set_my_short_description(
+                short_description=get_response(ResponseKey.CREATED_BOT_SHORT_DESCRIPTION, lang, BOT_CREATOR_USERNAME=MAIN_BOT_USERNAME),
+                language_code=lang
+            )
+            commands = get_commands(CommandKey.CREATED_BOT_COMMANDS, lang)
+            bot_commands = [BotCommand(command=cmd['command'], description=cmd['description']) for cmd in commands]
+            await bot.set_my_commands(commands=bot_commands, language_code=lang)
         return True
     except Exception as e:
         logger.exception(f"Error configuring bot interface:\n{str(e)}")
@@ -441,45 +447,13 @@ async def create_and_configure_bot(token: str) -> Application:
         # Get bot instance
         new_bot = application.bot
         
-        # Retry mechanism for bot info retrieval with timeout handling
-        max_retries = 3
-        retry_delay = 2
-        
-        for attempt in range(max_retries):
-            try:
-                bot_info = await new_bot.get_me()
-                bot_username = bot_info.username
-                break
-            except TimedOut:
-                if attempt < max_retries - 1:
-                    logger.warning(f"Timeout getting bot info for {short_token}, attempt {attempt + 1}/{max_retries}, retrying in {retry_delay}s...")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    logger.error(f"Failed to get bot info for {short_token} after {max_retries} attempts due to timeout")
-                    raise
-            except Exception as e:
-                logger.error(f"Failed to get bot info for {short_token}: {type(e).__name__}")
-                raise
+        bot_info = await _retry_async_call(new_bot.get_me, short_token, "getting bot info")
+        if bot_info is None:
+            raise RuntimeError(f"Failed to get bot info for {short_token}")
+        bot_username = bot_info.username
 
         webhook_url = f'{WEBHOOK_BASE_URL}/webhook/{token}'
-
-        # Get webhook info with retry mechanism
-        retry_delay = 2  # Reset delay
-        for attempt in range(max_retries):
-            try:
-                webhook_info = await new_bot.get_webhook_info()
-                break
-            except TimedOut:
-                if attempt < max_retries - 1:
-                    logger.warning(f"Timeout getting webhook info for {short_token}, attempt {attempt + 1}/{max_retries}, retrying...")
-                    await asyncio.sleep(retry_delay)
-                else:
-                    logger.error(f"Failed to get webhook info for {short_token} after {max_retries} attempts due to timeout")
-                    raise
-            except Exception as e:
-                logger.error(f"Failed to get webhook info for {short_token}: {type(e).__name__}")
-                raise
+        webhook_info = await _retry_async_call(new_bot.get_webhook_info, short_token, "getting webhook info")
                 
     except Exception as e:
         logger.exception(f"Failed to initialize bot {short_token}:\n{str(e)}")
@@ -507,7 +481,6 @@ async def create_and_configure_bot(token: str) -> Application:
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('privacy', privacy))
     application.add_handler(CommandHandler('safetycheck', safetycheck))
-    # Then add anonymous message handler for non-admin messages
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
     application.add_handler(CallbackQueryHandler(handle_anonymous_callback, pattern=f'^({CBD_ANON_NO_HISTORY}|{CBD_ANON_WITH_HISTORY}|{CBD_ANON_FORWARD})'))
     application.add_handler(CallbackQueryHandler(handle_read_callback, pattern=f'^{CBD_READ_MESSAGE}'))

@@ -1,4 +1,4 @@
-from telegram import Update, CallbackQuery, Message
+from telegram import Update, CallbackQuery, Message, MessageId
 from telegram.ext import ContextTypes
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji
 from telegram.constants import ParseMode
@@ -35,7 +35,7 @@ import logging
 import asyncio
 from cachetools import TTLCache
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +52,7 @@ def should_send_error_message(user_id: int) -> bool:
     Returns False if we've recently failed multiple times (circuit breaker open).
     '''
     failure_count = RECENT_ERROR_SEND_FAILURES.get(user_id, 0)
-    if failure_count >= CIRCUIT_BREAKER_THRESHOLD:
-        logger.debug(f"Circuit breaker open: {failure_count} recent failures")
-        return False
-    return True
+    return failure_count < CIRCUIT_BREAKER_THRESHOLD
 
 def record_error_send_failure(user_id: int):
     '''Record that we failed to send an error message to a user.'''
@@ -186,12 +183,100 @@ def generate_inline_buttons_anonymous(user_lang: str) -> InlineKeyboardMarkup:
     Returns:
         InlineKeyboardMarkup: The configured keyboard markup with anonymous sending options
     '''
-    keyboard = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton(str(get_response(ResponseKey.ANONYMOUS_INLINEBUTTON1, user_lang)), callback_data=CBD_ANON_NO_HISTORY)],
         [InlineKeyboardButton(str(get_response(ResponseKey.ANONYMOUS_INLINEBUTTON2, user_lang)), callback_data=CBD_ANON_WITH_HISTORY)],
         [InlineKeyboardButton(str(get_response(ResponseKey.ANONYMOUS_INLINEBUTTON3, user_lang)), callback_data=CBD_ANON_FORWARD)]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    ])
+
+async def safe_copy_message(original_message: Message, target_chat_id: int, context: ContextTypes.DEFAULT_TYPE, 
+                            fallback_text: Optional[str] = None) -> Tuple[Optional[MessageId], Optional[str]]:
+    '''
+    Copy a message to target chat with unified error handling.
+    
+    Args:
+        original_message: The message to copy
+        target_chat_id: The target chat ID
+        context: Bot context
+        fallback_text: Optional text prefix for fallback (e.g., anonymous ID)
+        
+    Returns:
+        Tuple of (copied_message_id, error_key) - error_key is None on success
+    '''
+    try:
+        copied = await original_message.copy(chat_id=target_chat_id)
+        return copied, None
+    except Forbidden as e:
+        if "bot was blocked by the user" in str(e).lower():
+            logger.warning("Cannot copy message: target has blocked the bot")
+            return None, "ADMIN_BLOCKED_BOT_ERROR"
+        logger.warning(f"Access forbidden when copying message: {e}")
+        return None, "ERROR_SENDING_MESSAGE"
+    except BadRequest as e:
+        error_msg = str(e).lower()
+        if "can't be copied" in error_msg:
+            try:
+                text = original_message.text or original_message.caption or "📷 Media message (cannot be copied)"
+                msg_text = f"📝 Anonymous message{' ' + fallback_text if fallback_text else ''}:\n\n{text}"
+                sent_msg = await context.bot.send_message(chat_id=target_chat_id, text=msg_text)
+                return MessageId(message_id=sent_msg.message_id), None
+            except Forbidden:
+                return None, "ADMIN_BLOCKED_BOT_ERROR"
+            except Exception:
+                return None, "ERROR_SENDING_MESSAGE"
+        elif "chat not found" in error_msg:
+            logger.warning("Cannot copy message: chat not found")
+        else:
+            logger.warning(f"Cannot copy message: {error_msg}")
+        return None, "ERROR_SENDING_MESSAGE"
+    except Exception as e:
+        logger.error(f"Unexpected error during message copy: {e}")
+        return None, "ERROR_SENDING_MESSAGE"
+
+async def safe_forward_message(original_message: Message, target_chat_id: int, context: ContextTypes.DEFAULT_TYPE,
+                                sender_name: str) -> Tuple[Optional[Message], Optional[str]]:
+    '''
+    Forward a message to target chat with unified error handling.
+    
+    Args:
+        original_message: The message to forward
+        target_chat_id: The target chat ID
+        context: Bot context
+        sender_name: HTML-formatted sender name for fallback
+        
+    Returns:
+        Tuple of (forwarded_message, error_key) - error_key is None on success
+    '''
+    try:
+        return await original_message.forward(target_chat_id), None
+    except Forbidden as e:
+        if "bot was blocked by the user" in str(e).lower():
+            logger.warning("Cannot forward message: target has blocked the bot")
+            return None, "ADMIN_BLOCKED_BOT_ERROR"
+        logger.warning(f"Access forbidden when forwarding message: {e}")
+        return None, "ERROR_SENDING_MESSAGE"
+    except BadRequest as e:
+        error_msg = str(e).lower()
+        if "can't be forwarded" in error_msg or "can't be copied" in error_msg:
+            try:
+                text = original_message.text or original_message.caption or "📷 Media message (cannot be forwarded)"
+                return await context.bot.send_message(
+                    chat_id=target_chat_id,
+                    text=f"📨 Forwarded from {sender_name}:\n\n{text}",
+                    parse_mode=ParseMode.HTML
+                ), None
+            except Forbidden:
+                return None, "ADMIN_BLOCKED_BOT_ERROR"
+            except Exception:
+                return None, "ERROR_SENDING_MESSAGE"
+        elif "chat not found" in error_msg:
+            logger.warning("Cannot forward message: chat not found")
+        else:
+            logger.warning(f"Cannot forward message: {e}")
+        return None, "ERROR_SENDING_MESSAGE"
+    except Exception as e:
+        logger.error(f"Unexpected error during message forward: {e}")
+        return None, "ERROR_SENDING_MESSAGE"
 
 #endregion Helpers
 
@@ -1004,93 +1089,11 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
 
     if query_data == CBD_ANON_NO_HISTORY:
         try:
-            try:
-                # Copy the message to admin
-                copied_msg = await original_sender_message.copy(
-                    chat_id=admin_id
-                )
-            except Forbidden as f_e:
-                error_msg = str(f_e).lower()
-                if "bot was blocked by the user" in error_msg:
-                    logger.warning("Cannot copy message: admin has blocked the bot")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ADMIN_BLOCKED_BOT_ERROR, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-                else:
-                    logger.warning(f"Access forbidden when copying message: {f_e}")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-            except BadRequest as br_e:
-                error_msg = str(br_e).lower()
-                if "can't be copied" in error_msg:
-                    logger.warning("Message cannot be copied, attempting alternative sending method")
-                    # Alternative: send message content as text
-                    try:
-                        message_text = original_sender_message.text or original_sender_message.caption or "📷 Media message (cannot be copied)"
-                        copied_msg = await context.bot.send_message(
-                            chat_id=admin_id,
-                            text=f"📝 Anonymous message:\n\n{message_text}"
-                        )
-                    except Forbidden as alt_f_e:
-                        if "bot was blocked by the user" in str(alt_f_e).lower():
-                            logger.error("Alternative sending method failed: admin has blocked the bot")
-                            await safe_edit_message_text(
-                                query.message,
-                                get_response(ResponseKey.ADMIN_BLOCKED_BOT_ERROR, user_lang),
-                                user_lang,
-                                fallback_query=query
-                            )
-                            return
-                        else:
-                            logger.error(f"Alternative sending method failed with Forbidden: {alt_f_e}")
-                            await safe_edit_message_text(
-                                query.message,
-                                get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                                user_lang,
-                                fallback_query=query
-                            )
-                            return
-                    except Exception as alt_e:
-                        logger.error(f"Alternative sending method also failed:\n{alt_e}")
-                        await safe_edit_message_text(
-                            query.message,
-                            get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                            user_lang,
-                            fallback_query=query
-                        )
-                        return
-                elif "chat not found" in error_msg:
-                    logger.warning("Cannot copy message: admin chat not found")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-                else:
-                    logger.warning(f"Cannot copy message:\n{error_msg}")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-            except Exception as e:
-                logger.error(f"Unexpected error during message copy:\n{e}")
+            copied_msg, error_key = await safe_copy_message(original_sender_message, admin_id, context)
+            if error_key or not copied_msg:
                 await safe_edit_message_text(
                     query.message,
-                    get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
+                    get_response(getattr(ResponseKey, error_key or "ERROR_SENDING_MESSAGE"), user_lang),
                     user_lang,
                     fallback_query=query
                 )
@@ -1132,93 +1135,11 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
             sender_user_first_name = query.from_user.first_name
             anon_id = generate_anonymous_id(sender_user_id, sender_user_first_name, with_history=True)
             
-            try:
-                # Copy the message to admin with anonymous ID
-                copied_msg = await original_sender_message.copy(
-                    chat_id=admin_id
-                )
-            except Forbidden as f_e:
-                error_msg = str(f_e).lower()
-                if "bot was blocked by the user" in error_msg:
-                    logger.warning("Cannot copy message: admin has blocked the bot")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ADMIN_BLOCKED_BOT_ERROR, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-                else:
-                    logger.warning(f"Access forbidden when copying message: {f_e}")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-            except BadRequest as br_e:
-                error_msg = str(br_e).lower()
-                if "can't be copied" in error_msg:
-                    logger.warning("Message cannot be copied, attempting alternative sending method")
-                    # Alternative: send message content as text
-                    try:
-                        message_text = original_sender_message.text or original_sender_message.caption or "📷 Media message (cannot be copied)"
-                        copied_msg = await context.bot.send_message(
-                            chat_id=admin_id,
-                            text=f"📝 Anonymous message {anon_id}:\n\n{message_text}"
-                        )
-                    except Forbidden as alt_f_e:
-                        if "bot was blocked by the user" in str(alt_f_e).lower():
-                            logger.error("Alternative sending method failed: admin has blocked the bot")
-                            await safe_edit_message_text(
-                                query.message,
-                                get_response(ResponseKey.ADMIN_BLOCKED_BOT_ERROR, user_lang),
-                                user_lang,
-                                fallback_query=query
-                            )
-                            return
-                        else:
-                            logger.error(f"Alternative sending method failed with Forbidden: {alt_f_e}")
-                            await safe_edit_message_text(
-                                query.message,
-                                get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                                user_lang,
-                                fallback_query=query
-                            )
-                            return
-                    except Exception as alt_e:
-                        logger.error(f"Alternative sending method also failed:\n{alt_e}")
-                        await safe_edit_message_text(
-                            query.message,
-                            get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                            user_lang,
-                            fallback_query=query
-                        )
-                        return
-                elif "chat not found" in error_msg:
-                    logger.warning("Cannot copy message: admin chat not found")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-                else:
-                    logger.warning(f"Cannot copy message:\n{br_e}")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-            except Exception as e:
-                logger.error(f"Unexpected error during message copy:\n{e}")
+            copied_msg, error_key = await safe_copy_message(original_sender_message, admin_id, context, anon_id)
+            if error_key or not copied_msg:
                 await safe_edit_message_text(
                     query.message,
-                    get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
+                    get_response(getattr(ResponseKey, error_key or "ERROR_SENDING_MESSAGE"), user_lang),
                     user_lang,
                     fallback_query=query
                 )
@@ -1259,92 +1180,11 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
             # Get user's name for forward
             sender_name = f"<code>{query.from_user.first_name} {query.from_user.last_name if query.from_user.last_name else ''}</code>"
             
-            try:
-                # Forward the message to admin
-                forwarded_msg = await original_sender_message.forward(admin_id)
-            except Forbidden as f_e:
-                error_msg = str(f_e).lower()
-                if "bot was blocked by the user" in error_msg:
-                    logger.warning("Cannot forward message: admin has blocked the bot")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ADMIN_BLOCKED_BOT_ERROR, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-                else:
-                    logger.warning(f"Access forbidden when forwarding message: {f_e}")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-            except BadRequest as br_e:
-                error_msg = str(br_e).lower()
-                if "can't be forwarded" in error_msg or "can't be copied" in error_msg:
-                    logger.warning("Message cannot be forwarded, attempting alternative sending method")
-                    # Alternative: send message content as text with user info
-                    try:
-                        message_text = original_sender_message.text or original_sender_message.caption or "📷 Media message (cannot be forwarded)"
-                        forwarded_msg = await context.bot.send_message(
-                            chat_id=admin_id,
-                            text=f"📨 Forwarded from {sender_name}:\n\n{message_text}",
-                            parse_mode=ParseMode.HTML
-                        )
-                    except Forbidden as alt_f_e:
-                        if "bot was blocked by the user" in str(alt_f_e).lower():
-                            logger.error("Alternative forwarding method failed: admin has blocked the bot")
-                            await safe_edit_message_text(
-                                query.message,
-                                get_response(ResponseKey.ADMIN_BLOCKED_BOT_ERROR, user_lang),
-                                user_lang,
-                                fallback_query=query
-                            )
-                            return
-                        else:
-                            logger.error(f"Alternative forwarding method failed with Forbidden: {alt_f_e}")
-                            await safe_edit_message_text(
-                                query.message,
-                                get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                                user_lang,
-                                fallback_query=query
-                            )
-                            return
-                    except Exception as alt_e:
-                        logger.error(f"Alternative forwarding method also failed:\n{alt_e}")
-                        await safe_edit_message_text(
-                            query.message,
-                            get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                            user_lang,
-                            fallback_query=query
-                        )
-                        return
-                elif "chat not found" in error_msg:
-                    logger.warning("Cannot forward message: admin chat not found")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-                else:
-                    logger.warning(f"Cannot forward message:\n{br_e}")
-                    await safe_edit_message_text(
-                        query.message,
-                        get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
-                        user_lang,
-                        fallback_query=query
-                    )
-                    return
-            except Exception as e:
-                logger.error(f"Unexpected error during message forward:\n{e}")
+            forwarded_msg, error_key = await safe_forward_message(original_sender_message, admin_id, context, sender_name)
+            if error_key or not forwarded_msg:
                 await safe_edit_message_text(
                     query.message,
-                    get_response(ResponseKey.ERROR_SENDING_MESSAGE, user_lang),
+                    get_response(getattr(ResponseKey, error_key or "ERROR_SENDING_MESSAGE"), user_lang),
                     user_lang,
                     fallback_query=query
                 )

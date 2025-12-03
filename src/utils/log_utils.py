@@ -90,26 +90,25 @@ def setup_logging():
     logger.addHandler(file_logging)
 
 class WebhookLogFilter(logging.Filter):
-    """A custom logging filter to sanitize bot tokens from webhook URLs and add detailed logging for 403 errors."""
+    """A custom logging filter to sanitize bot tokens and filter noisy 404 GET requests."""
+    
     def filter(self, record: logging.LogRecord) -> bool:
         if record.name == 'uvicorn.access' and record.args and len(record.args) >= 5:
-            # Convert args to list for safe indexing
             args_list = list(record.args)
-            if len(args_list) > 2:
-                path = args_list[2]
-
-                # Type-check to ensure 'path' is a string
-                if isinstance(path, str) and path.startswith("/webhook/"):
-                    token = path.split('/')[2]
-                    sanitized_path = f"/webhook/{shorten_token(token)}"
-                    
-                    args_list[2] = sanitized_path
-                    record.args = tuple(args_list)
-                    
-                    # Add context for 403 errors
-                    if len(args_list) > 4 and "403" in str(args_list[4]):
-                        # This is a 403 on webhook - add more context
-                        record.msg = f"⚠️ Webhook security blocked: {record.msg}"
+            method = args_list[1] if len(args_list) > 1 else ''
+            path = args_list[2] if len(args_list) > 2 else ''
+            status_code = str(args_list[4]) if len(args_list) > 4 else ''
+            
+            # Filter out all 404 GET requests (noisy logs)
+            if method == 'GET' and '404' in status_code:
+                return False
+            
+            # Sanitize webhook tokens in path
+            if isinstance(path, str) and path.startswith("/webhook/"):
+                args_list[2] = f"/webhook/{shorten_token(path.split('/')[2])}"
+                record.args = tuple(args_list)
+                if "403" in status_code:
+                    record.msg = f"⚠️ Webhook security blocked: {record.msg}"
         
         return True
 

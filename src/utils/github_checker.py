@@ -272,10 +272,14 @@ class GitHubChecker:
             if file in self.github_hashes and self.local_hashes[file] != self.github_hashes[file]
         ]
 
+        output_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
+        
         if not modified_files:
+            # Clear the diff file when no differences
+            if os.path.exists(output_path):
+                os.remove(output_path)
             return "IDENTICAL_FILES"
 
-        output_path = os.path.join(os.getcwd(), DIFFERENCES_FILE_NAME)
         dir_name = os.path.dirname(output_path)
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)

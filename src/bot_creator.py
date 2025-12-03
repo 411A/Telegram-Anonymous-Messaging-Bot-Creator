@@ -342,16 +342,6 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error preparing file data:\n{e}")
             raise ValueError("Failed to prepare script file data")
 
-        # Prepare the .md differences file using aiofiles
-        try:
-            diff_file_path = str(DIFFERENCES_FILE_NAME)
-            async with aiofiles.open(diff_file_path, "rb") as diff_file:
-                diff_file_data = io.BytesIO(await diff_file.read())
-                diff_file_data.name = str(DIFFERENCES_FILE_NAME.name)
-        except Exception as e:
-            logger.error(f"Error reading diff file:\n{e}")
-            raise ValueError("Failed to prepare diff file data")
-
         # Create a media group (album) to send both files in one message
         media_group = [
             InputMediaDocument(media=main_file_to_send, filename=running_script_filename),

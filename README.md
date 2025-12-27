@@ -131,6 +131,17 @@ openssl rand -base64 32
 
 ### Master Password
 
+#### Infisical
+
+Add to `.env` or Docker secrets: `INFISICAL_SECRET_NAME=ANONYMOUS_MASTER_PASSWORD`, `INFISICAL_CLIENT_ID=...`, `INFISICAL_CLIENT_SECRET=...`, `INFISICAL_PROJECT_ID=...`, `INFISICAL_ENVIRONMENT=prod`
+Create an Infisical **Machine Identity** with **Viewer** role and generate **Universal Auth** credentials (Copy Client ID & Secret).
+Ensure the identity has access to the `prod` environment and store the master password using the secret name above.
+Restart the bot — the master password is securely fetched from Infisical at startup (read-only).
+
+Read more here: https://infisical.com/docs/sdks/languages/python
+
+#### Manual
+
 On first run, you'll be prompted to set a **master password** (minimum 12 characters). This password:
 - Encrypts all data in the database
 - Uses **zero-knowledge security** (partial hash storage)

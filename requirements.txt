@@ -6,3 +6,4 @@ aiohttp==3.11.13
 aiosqlite==0.21.0
 cachebox==4.5.1
 uvloop==0.21.0
+infisicalsdk

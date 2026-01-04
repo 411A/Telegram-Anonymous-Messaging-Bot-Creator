@@ -5,6 +5,9 @@ services:
       dockerfile: docker/Dockerfile
     container_name: hidego-tgbot
     
+    #* Restart policy - auto-restart on failure and after system reboot
+    restart: unless-stopped
+    
     #* Run as host user to avoid ownership issues
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
     

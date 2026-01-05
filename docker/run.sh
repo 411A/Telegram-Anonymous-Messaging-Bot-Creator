@@ -63,17 +63,19 @@ case "$COMMAND" in
         
         # Check if Infisical is configured (automated password)
         INFISICAL_CLIENT_ID=$(grep "^INFISICAL_CLIENT_ID=" ../.env 2>/dev/null | cut -d'=' -f2 | tr -d ' "'"'"'')
+        INFISICAL_SECRET=$(grep "^INFISICAL_CLIENT_SECRET=" ../.env 2>/dev/null | cut -d'=' -f2 | tr -d ' "'"'"'')
         
-        if [[ -n "$INFISICAL_CLIENT_ID" && "$INFISICAL_CLIENT_ID" != "your_actual_client_id_here" ]]; then
-            # Infisical is configured - no manual password needed
+        # Check if Infisical is properly configured (both ID and secret must be set and not placeholder)
+        INFISICAL_CONFIGURED=false
+        if [[ -n "$INFISICAL_CLIENT_ID" && "$INFISICAL_CLIENT_ID" != "your_actual_client_id_here" && \
+              -n "$INFISICAL_SECRET" && "$INFISICAL_SECRET" != "your_actual_client_secret_here" ]]; then
+            INFISICAL_CONFIGURED=true
             log_info "Infisical detected - password will be retrieved automatically"
-            log_info "Bot will run on port $FASTAPI_PORT"
         else
-            # Manual password entry required
             log_info "After entering password, use Ctrl+P then Ctrl+Q to detach"
             log_info "Or close terminal after bot starts - container will keep running"
-            log_info "Bot will run on port $FASTAPI_PORT"
         fi
+        log_info "Bot will run on port $FASTAPI_PORT"
         
         # Rebuild if requested (--no-cache for fresh build)
         if [[ "$BUILD_FLAG" == "true" ]]; then
@@ -82,11 +84,18 @@ case "$COMMAND" in
         fi
         
         # Start services
+        # Use compose override for TTY when manual password entry is needed
+        if [[ "$INFISICAL_CONFIGURED" == "true" ]]; then
+            COMPOSE_CMD="docker compose"
+        else
+            COMPOSE_CMD="docker compose -f docker-compose.yml -f docker-compose.manual.yml"
+        fi
+        
         if [[ "$TUNNEL_MODE" == "true" ]]; then
             log_info "Starting bot with Cloudflare Tunnel..."
-            docker compose up -d
+            $COMPOSE_CMD up -d
             
-            if [[ -n "$INFISICAL_CLIENT_ID" && "$INFISICAL_CLIENT_ID" != "your_actual_client_id_here" ]]; then
+            if [[ "$INFISICAL_CONFIGURED" == "true" ]]; then
                 # Infisical configured - just follow logs, no attach needed
                 log_success "Bot started! Following logs (Ctrl+C to stop watching)..."
                 docker logs -f hidego-tgbot
@@ -97,9 +106,9 @@ case "$COMMAND" in
             fi
         else
             log_info "Starting bot only (no tunnel)..."
-            docker compose up -d hidego-tgbot
+            $COMPOSE_CMD up -d hidego-tgbot
             
-            if [[ -n "$INFISICAL_CLIENT_ID" && "$INFISICAL_CLIENT_ID" != "your_actual_client_id_here" ]]; then
+            if [[ "$INFISICAL_CONFIGURED" == "true" ]]; then
                 # Infisical configured - just follow logs, no attach needed
                 log_success "Bot started! Following logs (Ctrl+C to stop watching)..."
                 docker logs -f hidego-tgbot

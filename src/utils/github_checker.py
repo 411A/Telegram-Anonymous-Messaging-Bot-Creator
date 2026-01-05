@@ -180,7 +180,9 @@ class GitHubChecker:
         headers = {"Accept": "application/vnd.github.v3+json"}
         github_hashes = {}
 
-        async with aiohttp.ClientSession() as session:
+        # Use timeout to prevent hanging on network issues
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, headers=headers) as response:
                 response.raise_for_status() # Raise an exception for bad status codes
                 repo_data = await response.json()
@@ -284,7 +286,9 @@ class GitHubChecker:
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
         
-        async with aiohttp.ClientSession() as session:
+        # Use timeout to prevent hanging on network issues
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with aiofiles.open(output_path, "w", encoding="utf-8") as outfile:
                 for file in sorted(modified_files):
                     local_path = os.path.join(self.local_dir, file)

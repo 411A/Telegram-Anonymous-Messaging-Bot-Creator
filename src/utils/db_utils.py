@@ -46,6 +46,8 @@ class DatabaseManager:
             # 256MB memory map
             await conn.execute("PRAGMA mmap_size = 268435456")
             await conn.execute("PRAGMA foreign_keys = ON")
+            # Handle contention when the database is locked (5 second timeout)
+            await conn.execute("PRAGMA busy_timeout = 5000")
             self._pool[self.db_path] = conn
         try:
             yield self._pool[self.db_path]
@@ -81,8 +83,6 @@ class DatabaseManager:
                     partial_hash TEXT
                 )
             """)
-            # Handle contention when the database is locked
-            await conn.execute("PRAGMA busy_timeout=5000;")
             # Create optimized indexes for faster queries
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_aid ON admins(admin_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_bu_admins ON admins(bot_username)")

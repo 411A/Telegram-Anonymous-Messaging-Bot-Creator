@@ -19,9 +19,11 @@ services:
     #* Run as host user to avoid ownership issues
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
     
-    #* Enable TTY and interactive mode for password input
-    tty: true
-    stdin_open: true
+    #* TTY and stdin for manual password entry (optional - only needed without Infisical)
+    #* When using Infisical, these can be commented out for cleaner auto-restarts
+    #* Uncomment if you need manual password input:
+    # tty: true
+    # stdin_open: true
     
     #* Environment variables from .env file
     env_file:

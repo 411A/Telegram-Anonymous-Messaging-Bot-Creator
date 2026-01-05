@@ -1,0 +1,9 @@
+# Override file for manual password entry mode (without Infisical)
+# This file is automatically used by run.sh when Infisical is not configured
+# Usage: docker compose -f docker-compose.yml -f docker-compose.manual.yml up -d
+
+services:
+  hidego-tgbot:
+    #* Enable TTY and interactive mode for manual password input
+    tty: true
+    stdin_open: true

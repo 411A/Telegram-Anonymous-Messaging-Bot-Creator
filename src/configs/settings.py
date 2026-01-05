@@ -23,6 +23,12 @@ load_dotenv(dotenv_path=BASE_DIR / ".env", override=True)
 LOGGER_STREAM_LEVEL: Final = 'ERROR'
 LOGGER_FILE_LEVEL: Final = 'ERROR'
 
+# Retry settings for Infisical when running headless (no TTY)
+# Seconds between retries
+INFISICAL_RETRY_DELAY = 60
+# Max retries before giving up (30 minutes total)
+INFISICAL_MAX_RETRIES = 30
+
 AVAILABLE_LANGUAGES_LITERAL: Final = Literal['en', 'fa']
 AVAILABLE_LANGUAGES_LIST: Final = ['en', 'fa']
 # Cache maximum 100 active bots in memory
@@ -139,4 +145,19 @@ LOG_FILENAME = os.getenv('LOG_FILENAME') or 'Logs.log'
 LOG_FILENAME = BASE_DIR / LOG_FOLDER_NAME / LOG_FILENAME
 LOGGER_TIMEZONE = os.getenv('LOGGER_TIMEZONE') or 'UTC'
 DEVELOPER_CONTACT_URL = os.getenv('DEVELOPER_CONTACT_URL') or 'https://t.me/ContactHydraBot'
+
+# Validate required environment variables at startup
+_MISSING_ENV_VARS = []
+if not MAIN_BOT_TOKEN:
+    _MISSING_ENV_VARS.append('MAIN_BOT_TOKEN')
+if not WEBHOOK_BASE_URL:
+    _MISSING_ENV_VARS.append('WEBHOOK_BASE_URL')
+if not TG_SECRET_TOKEN:
+    _MISSING_ENV_VARS.append('TG_SECRET_TOKEN')
+
+if _MISSING_ENV_VARS:
+    import sys
+    print(f"❌ FATAL: Missing required environment variables: {', '.join(_MISSING_ENV_VARS)}")
+    print("Please check your .env file and ensure all required variables are set.")
+    sys.exit(1)  # Exit with error code to trigger Docker restart
 #endregion Environment Variables

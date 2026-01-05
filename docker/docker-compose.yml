@@ -8,6 +8,14 @@ services:
     #* Restart policy - auto-restart on failure and after system reboot
     restart: unless-stopped
     
+    #* Health check - Docker will restart if app becomes unresponsive
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${FASTAPI_PORT:-13360}/"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    
     #* Run as host user to avoid ownership issues
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
     

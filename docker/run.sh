@@ -57,14 +57,23 @@ case "$COMMAND" in
             TUNNEL_MODE=false
         fi
         
-        log_info "After entering password, use Ctrl+P then Ctrl+Q to detach"
-        log_info "Or close terminal after bot starts - container will keep running"
-        
         # Get port from .env file
         FASTAPI_PORT=$(grep "^FASTAPI_PORT=" ../.env 2>/dev/null | cut -d'=' -f2 | tr -d ' "'"'"'')
         FASTAPI_PORT=${FASTAPI_PORT:-13360}
         
-        log_info "Bot will run on port $FASTAPI_PORT"
+        # Check if Infisical is configured (automated password)
+        INFISICAL_CLIENT_ID=$(grep "^INFISICAL_CLIENT_ID=" ../.env 2>/dev/null | cut -d'=' -f2 | tr -d ' "'"'"'')
+        
+        if [[ -n "$INFISICAL_CLIENT_ID" && "$INFISICAL_CLIENT_ID" != "your_actual_client_id_here" ]]; then
+            # Infisical is configured - no manual password needed
+            log_info "Infisical detected - password will be retrieved automatically"
+            log_info "Bot will run on port $FASTAPI_PORT"
+        else
+            # Manual password entry required
+            log_info "After entering password, use Ctrl+P then Ctrl+Q to detach"
+            log_info "Or close terminal after bot starts - container will keep running"
+            log_info "Bot will run on port $FASTAPI_PORT"
+        fi
         
         # Rebuild if requested (--no-cache for fresh build)
         if [[ "$BUILD_FLAG" == "true" ]]; then
@@ -77,16 +86,28 @@ case "$COMMAND" in
             log_info "Starting bot with Cloudflare Tunnel..."
             docker compose up -d
             
-            # Attach to bot container for password input
-            log_info "Attaching to bot container for password input..."
-            docker attach hidego-tgbot
+            if [[ -n "$INFISICAL_CLIENT_ID" && "$INFISICAL_CLIENT_ID" != "your_actual_client_id_here" ]]; then
+                # Infisical configured - just follow logs, no attach needed
+                log_success "Bot started! Following logs (Ctrl+C to stop watching)..."
+                docker logs -f hidego-tgbot
+            else
+                # Manual password - need to attach for input
+                log_info "Attaching to bot container for password input..."
+                docker attach hidego-tgbot
+            fi
         else
             log_info "Starting bot only (no tunnel)..."
             docker compose up -d hidego-tgbot
             
-            # Attach to bot container for password input
-            log_info "Attaching to bot container for password input..."
-            docker attach hidego-tgbot
+            if [[ -n "$INFISICAL_CLIENT_ID" && "$INFISICAL_CLIENT_ID" != "your_actual_client_id_here" ]]; then
+                # Infisical configured - just follow logs, no attach needed
+                log_success "Bot started! Following logs (Ctrl+C to stop watching)..."
+                docker logs -f hidego-tgbot
+            else
+                # Manual password - need to attach for input
+                log_info "Attaching to bot container for password input..."
+                docker attach hidego-tgbot
+            fi
         fi
         ;;
     "stop")

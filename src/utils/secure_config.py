@@ -1,7 +1,9 @@
 import os
+import sys
 import getpass
 import secrets
 import base64
+import time
 from pathlib import Path
 
 # Infisical SDK (Correct import for 'infisical-sdk')
@@ -10,7 +12,8 @@ from infisical_sdk import InfisicalSDKClient
 # Cryptography (REQUIRED for your manual fallback logic)
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from configs.settings import SECURE_CONFIG_FILE
+from configs.settings import SECURE_CONFIG_FILE, INFISICAL_RETRY_DELAY, INFISICAL_MAX_RETRIES
+
 
 # ==========================================
 # 1. Crypto Helpers (For Manual Fallback)
@@ -120,23 +123,49 @@ def sync_local_config(password: str):
 # 3. Main Logic
 # ==========================================
 
+def is_interactive() -> bool:
+    """Check if we have an interactive TTY available."""
+    return sys.stdin.isatty()
+
 def get_encryption_key() -> str | None:
     """
     Retrieves encryption key.
-    1. Try Infisical (Automated)
-    2. Fallback to Manual Entry
+    1. Try Infisical (Automated) - with retries if no TTY available
+    2. Fallback to Manual Entry (only if TTY available)
     """
     
-    # --- Attempt 1: Infisical ---
-    infisical_pass = get_infisical_secret()
+    is_headless = not is_interactive()
+    retry_count = 0
+    
+    while True:
+        # --- Attempt 1: Infisical ---
+        infisical_pass = get_infisical_secret()
 
-    if infisical_pass:
-        print("✅ Successfully retrieved encryption key from Infisical.")
-        # Sync local config so manual fallback works in future if Infisical dies
-        sync_local_config(infisical_pass)
-        return infisical_pass
+        if infisical_pass:
+            print("✅ Successfully retrieved encryption key from Infisical.")
+            # Sync local config so manual fallback works in future if Infisical dies
+            sync_local_config(infisical_pass)
+            return infisical_pass
 
-    # --- Attempt 2: Manual Fallback ---
+        # --- Infisical failed ---
+        
+        # If running headless (no TTY), retry Infisical instead of falling back to manual
+        if is_headless:
+            retry_count += 1
+            if retry_count >= INFISICAL_MAX_RETRIES:
+                print(f"❌ FATAL: Infisical unavailable after {INFISICAL_MAX_RETRIES} retries and no TTY for manual input.")
+                print("Please check your Infisical credentials and network connectivity.")
+                # Return None to let the app handle graceful shutdown
+                # The container will restart and try again
+                return None
+            
+            print(f"⚠️ Infisical unavailable and no TTY for manual input. Retrying in {INFISICAL_RETRY_DELAY}s... ({retry_count}/{INFISICAL_MAX_RETRIES})")
+            time.sleep(INFISICAL_RETRY_DELAY)
+            continue
+        
+        # --- Attempt 2: Manual Fallback (only with TTY) ---
+        break
+    
     config_path = Path(SECURE_CONFIG_FILE)
     
     # Case A: Initial Setup (No Infisical, No Local Config)

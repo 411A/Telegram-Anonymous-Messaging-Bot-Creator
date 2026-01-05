@@ -655,13 +655,15 @@ async def lifespan(app: FastAPI):
     db_manager = DatabaseManager()
     encryption_key = get_encryption_key()
     if encryption_key is None:
-        print("Encryption setup cancelled by user. Exiting gracefully.")
-        sys.exit(0)
+        print("❌ Encryption setup failed. Exiting with error code to trigger restart.")
+        sys.exit(1)  # Exit with error code so Docker restarts the container
     encryptor = Encryptor(encryption_key)
     admin_manager = AdminManager(db_manager, encryptor)
 
     # Ensure MAIN_BOT_TOKEN is not None
-    assert MAIN_BOT_TOKEN is not None, "MAIN_BOT_TOKEN must be set"
+    if MAIN_BOT_TOKEN is None:
+        print("❌ FATAL: MAIN_BOT_TOKEN is not set. Check your .env file.")
+        sys.exit(1)  # Exit with error code to trigger Docker restart
 
     # Initialize main bot with proper handlers
     main_app = (
@@ -810,6 +812,11 @@ async def webhook_handler(bot_token: str, request: Request):
         return {"status": "error", "message": "Queue overloaded"}
     
     return {"status": "ok"}
+
+@app.get('/')
+async def health_check():
+    """Health check endpoint for Docker healthcheck and monitoring."""
+    return {"status": "healthy", "service": "hidego-tgbot"}
 
 app.add_middleware(CORSMiddleware, **CORS_SETTINGS)
 logger.warning("Middleware added.")

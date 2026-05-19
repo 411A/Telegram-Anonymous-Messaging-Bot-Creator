@@ -68,13 +68,8 @@ def setup_logging():
         logging_date_format
     ))
     logger.addHandler(stream_logging)
-    # Rotating File Handler with detailed formatting
-    # Clear the log file before setting up the handler
-    try:
-        with open(LOG_FILENAME, 'w', encoding='utf-8') as f:
-            f.truncate(0)
-    except FileNotFoundError:
-        pass
+    # Rotating File Handler with detailed formatting. Keep previous startup
+    # failures so Docker restart loops can be diagnosed from persisted logs.
     file_logging = TimedRotatingFileHandler(
         filename=LOG_FILENAME,
         encoding='utf-8',

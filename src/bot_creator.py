@@ -12,7 +12,7 @@ if platform.system() != 'Windows':
 
 import ipaddress
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from telegram import Bot, Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaDocument
 from telegram.ext import (
@@ -139,7 +139,7 @@ async def _retry_async_call(coro_func, short_token: str, operation: str, max_ret
             logger.error(f"Failed to {operation} for {short_token}: {type(e).__name__}")
             raise
 
-# Global LRU cache to store active bot applications.
+# Global LRU cache to store active user-created bot applications.
 active_bots = ApplicationLRUCache(maxsize=MAX_IN_MEMORY_ACTIVE_BOTS, on_evicted=cleanup_application)
 
 #! Dictionary to hold per-bot locks to avoid concurrent reinitializations.
@@ -149,6 +149,7 @@ app_creation_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 db_manager: Optional[DatabaseManager] = None
 encryptor: Optional[Encryptor] = None
 admin_manager: Optional[AdminManager] = None
+main_bot_application: Optional[Application] = None
 
 async def main_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -626,8 +627,10 @@ async def handle_retry_register(update: Update, context: ContextTypes.DEFAULT_TY
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME, MAIN_BOT_USERNAME, db_manager, encryptor, admin_manager
+    global RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME, MAIN_BOT_USERNAME, db_manager, encryptor, admin_manager, main_bot_application
 
+    main_app: Optional[Application] = None
+    app.state.main_bot_ready = False
     RUNNING_SCRIPT_SINCE = time.strftime("%Y/%m/%d %H:%M", time.gmtime())
 
     if RUNNING_SCRIPT_DATA is None:
@@ -707,25 +710,24 @@ async def lifespan(app: FastAPI):
         # Initialize and start the main bot
         await main_app.initialize()
         await main_app.start()
-        active_bots[MAIN_BOT_TOKEN] = main_app
+        main_bot_application = main_app
+        app.state.main_bot_ready = True
         logger.info('Main bot started successfully')
 
         yield
 
     except Exception as e:
         logger.exception(f'Error during startup:\n{str(e)}')
-        yield
+        raise
     finally:
         # Cleanup in finally block to ensure it runs even after errors
+        app.state.main_bot_ready = False
         logger.warning('Shutting down bots...')
+        if MAIN_BOT_TOKEN and (main_bot_application or main_app):
+            await cleanup_application(MAIN_BOT_TOKEN, main_bot_application or main_app)
+            main_bot_application = None
         for token, bot in list(active_bots.items()):
-            short_token = shorten_token(token)
-            try:
-                await bot.stop()
-                await bot.shutdown()
-                logger.info(f'Successfully stopped bot {short_token}')
-            except Exception as e:
-                logger.error(f'Error stopping bot {short_token}:\n{str(e)}')
+            await cleanup_application(token, bot)
         active_bots.clear()
         await db_manager.close_all()
         logger.warning('Cleanup completed.')
@@ -813,9 +815,18 @@ async def webhook_handler(bot_token: str, request: Request):
     
     return {"status": "ok"}
 
+def _main_bot_is_running() -> bool:
+    return bool(main_bot_application and getattr(main_bot_application, "running", False))
+
 @app.get('/')
+@app.get('/health')
 async def health_check():
     """Health check endpoint for Docker healthcheck and monitoring."""
+    if not getattr(app.state, "main_bot_ready", False) or not _main_bot_is_running():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="main bot is not running",
+        )
     return {"status": "healthy", "service": "hidego-tgbot"}
 
 app.add_middleware(CORSMiddleware, **CORS_SETTINGS)

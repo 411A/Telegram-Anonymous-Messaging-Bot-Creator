@@ -20,8 +20,8 @@ load_dotenv(dotenv_path=BASE_DIR / ".env", override=True)
 #* Constants used throughout the application
 #region Constants
 # Log levels: https://docs.python.org/3/library/logging.html#logging-levels
-LOGGER_STREAM_LEVEL: Final = 'ERROR'
-LOGGER_FILE_LEVEL: Final = 'ERROR'
+LOGGER_STREAM_LEVEL: Final = os.getenv('LOGGER_STREAM_LEVEL', 'ERROR').upper()
+LOGGER_FILE_LEVEL: Final = os.getenv('LOGGER_FILE_LEVEL', 'ERROR').upper()
 
 # Retry settings for Infisical when running headless (no TTY)
 # Seconds between retries

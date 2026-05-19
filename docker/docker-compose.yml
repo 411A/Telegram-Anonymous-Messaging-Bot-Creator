@@ -8,9 +8,10 @@ services:
     #* Restart policy - auto-restart on failure and after system reboot
     restart: unless-stopped
     
-    #* Health check - Docker will restart if app becomes unresponsive
+    #* Health check - marks the container unhealthy when the bot is not ready.
+    #* Docker restart policies restart exited containers, not unhealthy ones.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${FASTAPI_PORT:-13360}/"]
+      test: ["CMD", "curl", "-f", "http://localhost:${FASTAPI_PORT:-13360}/health"]
       interval: 60s
       timeout: 10s
       retries: 3

@@ -19,7 +19,7 @@ from telegram.ext import (
     Application, CommandHandler, ContextTypes,
     MessageHandler, CallbackQueryHandler, filters
 )
-from telegram.error import TimedOut, NetworkError
+from telegram.error import TimedOut, NetworkError, InvalidToken
 from telegram.constants import ParseMode
 from typing import Dict, Optional
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
@@ -554,19 +554,19 @@ async def revoke_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         short_token = shorten_token(token)
         logger.info(f"Revoking bot access for {short_token}")
 
-        # Remove bot from active bots if present.
+        # Remove bot from active bots if present. Revocation should still clean
+        # local state even if the target bot token has already been revoked.
         if token in active_bots:
-            application = active_bots[token]
+            application = active_bots.pop(token)
             try:
                 # Revoke token through Telegram API using the Bot instance.
                 await application.bot.delete_webhook()
-                await application.stop()
-                await application.shutdown()
-                del active_bots[token]
-                logger.info(f"Successfully stopped bot {short_token}")
+            except InvalidToken as e:
+                logger.warning(f"Bot {short_token} token is already invalid; removing local registration:\n{e}")
             except Exception as e:
-                logger.error(f"Error stopping bot {short_token}:\n{str(e)}")
-                raise
+                logger.warning(f"Could not delete webhook for bot {short_token}; continuing local revoke:\n{e}")
+            await cleanup_application(token, application)
+            logger.info(f"Removed bot {short_token} from active cache")
 
         # Remove bot_token entry from database.
         assert encryptor is not None
@@ -750,6 +750,19 @@ def _parse_ip(ip_str: Optional[str]) -> Optional[ipaddress._BaseAddress]:
     except ValueError:
         return None
 
+def _update_is_private_chat(update_data: dict) -> bool:
+    message = update_data.get("message") or update_data.get("edited_message")
+    if message:
+        return message.get("chat", {}).get("type") == "private"
+
+    callback_query = update_data.get("callback_query")
+    if callback_query:
+        callback_message = callback_query.get("message")
+        if callback_message:
+            return callback_message.get("chat", {}).get("type") == "private"
+
+    return False
+
 @app.post('/webhook/{bot_token}')
 async def webhook_handler(bot_token: str, request: Request):
     short_token = shorten_token(bot_token)
@@ -762,6 +775,9 @@ async def webhook_handler(bot_token: str, request: Request):
     # Parse request body early for dedup check
     update_data = await request.json()
     update_id = update_data.get("update_id")
+    if not _update_is_private_chat(update_data):
+        logger.info(f"Ignoring non-private update for {short_token}: update_id={update_id}")
+        return {"status": "ok", "message": "ignored non-private update"}
     if update_id:
         update_key = f"{short_token}:{update_id}"
         if update_key in PROCESSED_UPDATES:
@@ -820,6 +836,8 @@ def _main_bot_is_running() -> bool:
 
 @app.get('/')
 @app.get('/health')
+@app.head('/')
+@app.head('/health')
 async def health_check():
     """Health check endpoint for Docker healthcheck and monitoring."""
     if not getattr(app.state, "main_bot_ready", False) or not _main_bot_is_running():

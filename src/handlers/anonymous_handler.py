@@ -2,7 +2,7 @@ from telegram import Update, CallbackQuery, Message, MessageId
 from telegram.ext import ContextTypes
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji
 from telegram.constants import ParseMode
-from telegram.error import Forbidden, BadRequest, NetworkError, TimedOut
+from telegram.error import Forbidden, BadRequest, NetworkError, TimedOut, ChatMigrated
 from utils.responses import get_response, ResponseKey
 from utils.db_utils import DatabaseManager, Encryptor, AdminManager
 from utils.helpers import generate_anonymous_id, check_language_availability
@@ -892,6 +892,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     logger.warning(f"Cannot send message to admin:\n{br_e}")
             except Forbidden as f_e:
                 logger.warning(f"Access forbidden when sending admin notification:\n{f_e}")
+            except ChatMigrated as cm_e:
+                new_chat_id = getattr(cm_e, "new_chat_id", "unknown")
+                logger.warning(f"Admin chat migrated to supergroup {new_chat_id}; pinned setup may need to be refreshed.")
             except Exception as e:
                 logger.exception(f"Failed to inform admin about reply context, blocked its bot or am I in a group without right permissions?!:\n{e}")
         return

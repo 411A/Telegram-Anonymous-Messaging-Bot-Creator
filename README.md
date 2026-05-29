@@ -149,6 +149,8 @@ On first run, you'll be prompted to set a **master password** (minimum 12 charac
 
 The hashed password is stored in `secret/config.secure`.
 
+Warning for Docker production: manual password mode is not unattended-recoverable. After a host reboot, `docker prune`, `docker compose down`, or a container recreation, the bot can wait for terminal input and stay offline until an operator attaches. Use Infisical for production Docker deployments.
+
 ---
 
 ## 🔧 **Deployment Guide**
@@ -320,8 +322,14 @@ cd docker/
 # Start bot (and tunnel if configured)
 ./run.sh start
 
+# Install host watchdog recovery after Infisical is configured
+./run.sh install-watchdog
+
 # Start with rebuild
 ./run.sh start -b
+
+# Reconcile/recreate containers immediately
+./run.sh recover
 
 # Stop everything
 ./run.sh stop
@@ -329,6 +337,10 @@ cd docker/
 # View logs
 ./run.sh logs                # Bot logs
 ./run.sh tunnel logs         # Tunnel logs
+
+# Check status
+./run.sh status
+./run.sh watchdog-status
 
 # Tunnel management
 ./run.sh tunnel start        # Start tunnel only
@@ -342,6 +354,8 @@ cd docker/
 # Clean up
 ./run.sh cleanup            # Remove all containers
 ```
+
+The Docker setup uses a fixed Compose project name (`hidego-tgbot`) so `stop`, `cleanup`, rebuilds, and watchdog recovery only target this bot. If you duplicate this setup for another bot, give that bot its own unique Compose project name and container names.
 
 ### Python Commands
 

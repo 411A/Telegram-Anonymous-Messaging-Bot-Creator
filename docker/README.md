@@ -69,7 +69,7 @@ chmod +x run.sh
 ### 4. Alternative: Direct Docker Compose
 ```bash
 cd docker/
-docker compose run --rm hidego-tgbot
+docker compose --env-file ../.env run --rm hidego-tgbot
 ```
 
 ## ⚙️ Environment Configuration
@@ -252,7 +252,7 @@ The bot accepts webhooks from:
 ### 1. Build the Image
 ```bash
 cd docker/
-docker compose build
+docker compose --env-file ../.env build
 ```
 
 ### 2. Create Required Directories
@@ -270,11 +270,15 @@ chmod -R 755 ../data ../logs ../secret ../diff
 ### 4. Run Container
 ```bash
 # Interactive mode (recommended for first setup)
-docker compose run --rm hidego-tgbot
+docker compose --env-file ../.env run --rm hidego-tgbot
 
 # Detached mode
-docker compose up -d
+docker compose --env-file ../.env up -d
 ```
+
+Important: direct `docker compose` commands must include `--env-file ../.env` from the `docker/` directory. Compose uses that file for `${FASTAPI_PORT}` interpolation in ports and healthchecks; `env_file:` only passes variables into the container.
+
+This project also sets the Compose project name to `hidego-tgbot`. Do not remove it. Without a unique project name, Compose defaults to the folder name, so multiple bots deployed from folders named `docker` can accidentally stop each other on `down`, cleanup, or rebuild flows. If you copy this Docker setup for another bot, change `name:`, `COMPOSE_PROJECT_NAME`, and container names to unique values.
 
 ## 📱 Container Management
 
@@ -283,13 +287,23 @@ docker compose up -d
 The `run.sh` script provides convenient container management:
 
 ```bash
-# Start the bot (interactive)
+# Start the bot and enable watchdog recovery
 ./run.sh start
 
 # Start with rebuild
 ./run.sh start -b
 
-# Stop all containers
+# Reconcile/recreate missing, exited, or unhealthy containers
+./run.sh recover
+
+# Install a systemd timer that runs recover every 2 minutes
+./run.sh install-watchdog
+
+# Check compose/container/watchdog state
+./run.sh status
+./run.sh watchdog-status
+
+# Stop all containers and disable watchdog recovery
 ./run.sh stop
 
 # View logs
@@ -301,6 +315,8 @@ The `run.sh` script provides convenient container management:
 # Clean up unused resources
 ./run.sh cleanup
 ```
+
+Production warning: Docker manual password mode is not unattended-recoverable. If Infisical is not configured, a recreated container may wait for password input after reboot, prune, or `docker compose down`. Use Infisical before installing the watchdog.
 
 ### Direct Docker Commands
 
@@ -352,7 +368,7 @@ sudo netstat -tlnp | grep :13360
 docker logs hidego-tgbot
 
 # Rebuild image
-docker compose build --no-cache
+docker compose --env-file ../.env build --no-cache
 ```
 
 **Database Issues:**
@@ -361,7 +377,7 @@ docker compose build --no-cache
 rm -f data/DATA.db*
 
 # Restart container to recreate
-docker compose restart
+docker compose --env-file ../.env restart
 ```
 
 ### Debug Mode
@@ -479,11 +495,35 @@ cp -r logs_backup/* logs/
 
 1. **Use a reverse proxy** (nginx, Cloudflare Tunnel)
 2. **Enable HTTPS** with valid SSL certificates
-3. **Set up monitoring** (container health checks)
+3. **Set up the host watchdog** with `./run.sh install-watchdog`
 4. **Configure log rotation** to prevent disk space issues
 5. **Set up automated backups**
 6. **Use a dedicated server** or VPS
 7. **Configure firewall** to allow only necessary ports
+
+### Automatic Recovery Watchdog
+
+Docker restart policies only restart containers that still exist. They do not recreate a stack after `docker compose down`, container removal, image pruning, or an unhealthy-but-running container. This project includes a host watchdog for those cases.
+
+The watchdog is scoped to the `hidego-tgbot` Compose project and exact container names, so it must not stop unrelated Docker projects.
+
+```bash
+cd docker/
+
+# Start once and remove any intentional-stop marker
+./run.sh start
+
+# Install the systemd timer on the host
+./run.sh install-watchdog
+
+# Verify the timer/service
+./run.sh watchdog-status
+
+# Run the same recovery pass manually
+./run.sh recover
+```
+
+The watchdog runs `./run.sh recover` every 2 minutes after boot. It recreates missing containers/images, restarts unhealthy containers, starts Cloudflare Tunnel when `config.yml` and `credentials.json` exist, and leaves the stack stopped after `./run.sh stop` or `./run.sh cleanup` until the next `./run.sh start`.
 
 ### Sample nginx Configuration
 
@@ -507,14 +547,14 @@ server {
 
 ### Health Monitoring
 
-Add health check to `docker-compose.yml`:
+The compose file already includes this healthcheck:
 ```yaml
 healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:${FASTAPI_PORT:-13360}/health"]
-  interval: 30s
+  test: ["CMD-SHELL", "curl -fsS http://localhost:${FASTAPI_PORT:-13360}/health || exit 1"]
+  interval: 60s
   timeout: 10s
   retries: 3
-  start_period: 40s
+  start_period: 120s
 ```
 
 ---
@@ -532,16 +572,16 @@ healthcheck:
 2. Verify your network IP matches `.env`:
    ```bash
    # Check current network IP
-   docker inspect telegram-bot-network | grep Subnet
+   docker network inspect docker_hidego-network | grep Subnet
    
    # Should match DOCKER_NETWORK_IP in .env
-   cat .env | grep DOCKER_NETWORK_IP
+   grep DOCKER_NETWORK_IP ../.env
    ```
 3. If mismatched, restart containers to apply fixed network:
    ```bash
    cd docker
-   docker-compose down
-   docker-compose up -d
+   docker compose --env-file ../.env down
+   docker compose --env-file ../.env up -d
    ```
 
 ### Container Won't Start
@@ -549,9 +589,9 @@ healthcheck:
 **Problem**: Container exits immediately after starting.
 
 **Solutions**:
-- Check logs: `docker-compose logs -f telegram-bot`
+- Check logs: `docker compose --env-file ../.env logs -f hidego-tgbot`
 - Verify all required environment variables in `.env`
-- Ensure bot token is valid: `TELEGRAM_BOT_TOKEN=123456:ABC-DEF...`
+- Ensure bot token is valid: `MAIN_BOT_TOKEN=123456:ABC-DEF...`
 - Check file permissions: `chmod 600 .env`
 
 ### Network Connection Errors
@@ -567,7 +607,7 @@ healthcheck:
   TELEGRAM_CONNECTION_TIMEOUT=20
   TELEGRAM_READ_TIMEOUT=60
   ```
-- Check Docker network connectivity: `docker network inspect telegram-bot-network`
+- Check Docker network connectivity: `docker network inspect docker_hidego-network`
 
 ### Database Permission Issues
 
@@ -578,8 +618,8 @@ healthcheck:
 - Check volume mounts in `docker-compose.yml`
 - Try recreating the volume:
   ```bash
-  docker-compose down -v
-  docker-compose up -d
+  docker compose --env-file ../.env down -v
+  docker compose --env-file ../.env up -d
   ```
 
 ### Port Already in Use

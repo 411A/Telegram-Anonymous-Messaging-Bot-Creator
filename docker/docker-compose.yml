@@ -1,3 +1,5 @@
+name: hidego-tgbot
+
 services:
   hidego-tgbot:
     build:
@@ -5,13 +7,16 @@ services:
       dockerfile: docker/Dockerfile
     container_name: hidego-tgbot
     
-    #* Restart policy - auto-restart on failure and after system reboot
-    restart: unless-stopped
+    #* Restart policy - revive existing containers after crashes and daemon restarts.
+    #* The host watchdog in run.sh handles removed containers/images after prune/down.
+    restart: always
+    init: true
+    stop_grace_period: 45s
     
     #* Health check - marks the container unhealthy when the bot is not ready.
     #* Docker restart policies restart exited containers, not unhealthy ones.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${FASTAPI_PORT:-13360}/health"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:${FASTAPI_PORT:-13360}/health || exit 1"]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -49,6 +54,13 @@ services:
     #* Security options
     security_opt:
       - no-new-privileges:true
+
+    #* Prevent Docker json logs from filling the disk and killing the host/daemon.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     
     #* Resource limits
     # deploy:
@@ -67,7 +79,9 @@ services:
     container_name: hidego-cloudflared
     
     #* Restart policy
-    restart: unless-stopped
+    restart: always
+    init: true
+    stop_grace_period: 30s
     
     #* Volume mounts for Cloudflare configuration
     volumes:
@@ -85,6 +99,12 @@ services:
     #* Security options
     security_opt:
       - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 networks:
   hidego-network:

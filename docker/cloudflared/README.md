@@ -85,7 +85,7 @@ cd ../
 ./run.sh start
 
 # Or manually:
-docker compose up -d
+docker compose --env-file ../.env up -d
 ```
 
 ## 🔧 Docker Compose Integration
@@ -103,7 +103,7 @@ services:
     build:
       context: cloudflared
     container_name: hidego-cloudflared
-    restart: unless-stopped
+    restart: always
     volumes:
       - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
       - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
@@ -118,7 +118,7 @@ services:
 ### Start Services
 ```bash
 cd docker/
-docker compose up -d
+docker compose --env-file ../.env up -d
 ```
 
 ### View Cloudflared Logs
@@ -128,18 +128,18 @@ docker logs -f hidego-cloudflared
 
 ### Restart Cloudflared Only
 ```bash
-docker compose restart cloudflared
+docker compose --env-file ../.env restart cloudflared
 ```
 
 ### Stop Everything
 ```bash
-docker compose down
+docker compose --env-file ../.env down
 ```
 
 ### Rebuild Cloudflared
 ```bash
-docker compose build cloudflared
-docker compose up -d cloudflared
+docker compose --env-file ../.env build cloudflared
+docker compose --env-file ../.env up -d cloudflared
 ```
 
 ## 🔍 Troubleshooting
@@ -193,7 +193,7 @@ docker exec -it hidego-cloudflared wget -O- http://hidego-tgbot:4114/health
 ## 🌟 Advantages of Dockerized Cloudflare Tunnel
 
 ✅ **Everything in one place**: Bot and tunnel managed together
-✅ **Easy deployment**: Single `docker compose up -d` command
+✅ **Easy deployment**: Single `./run.sh start` command
 ✅ **Automatic restart**: Tunnel auto-restarts if it crashes
 ✅ **No tmux needed**: Container runs as a proper service
 ✅ **Better logging**: Integrated with Docker logging
@@ -220,7 +220,7 @@ If you were running cloudflared in tmux before:
 3. Start with Docker Compose:
    ```bash
    cd docker/
-   docker compose up -d
+   docker compose --env-file ../.env up -d
    ```
 
 Your tunnel will now run as a proper Docker service! 🎉

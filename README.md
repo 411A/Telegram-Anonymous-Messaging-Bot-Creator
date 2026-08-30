@@ -1,7 +1,18 @@
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/411A/Telegram-Anonymous-Messaging-Bot-Creator)
+<div align="center">
 
-## 🤖 **Hid**den**Ego** - Telegram Anonymous Messaging Bot Creator 
-A robust solution for creating Telegram bots that empower anonymous messaging with powerful management and secure configurations.
+# 🤖 <b>Hid</b>den<b>Ego</b>
+### Telegram Anonymous Messaging Bot Creator
+
+*Launch your own zero-knowledge anonymous messaging bot in minutes — with enterprise-grade security, multi-bot management, and verifiable open-source transparency.*
+
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/411A/Telegram-Anonymous-Messaging-Bot-Creator)
+[![Telegram](https://img.shields.io/badge/Telegram-%40HidEgoBot-2CA5E0?logo=telegram&logoColor=white)](https://t.me/HidEgoBot)
+
+</div>
+
+---
 
 ---
 
@@ -19,6 +30,8 @@ This project provides a comprehensive framework for building Telegram bots that 
 - **Live GitHub Comparison**:
 Users can directly inspect and compare the deployed application with its GitHub repository counterpart using the `/safetycheck` command, ensuring complete transparency and fostering community trust.
 - **Zero-Knowledge Security:** We only store a **partial hash** of encrypted data in the database, meaning even admins **cannot** decrypt it. Decryption is only possible when users provide their unique hash fragment, and the process happens entirely in memory—without being logged—ensuring ultimate privacy.
+- **Strongly Typed & Lint-Clean**: CI-grade `mypy` + `ruff` configuration enforces production-grade code quality.
+- **Graceful Resilience**: Circuit breakers, retry with exponential backoff, webhook deduplication, IP allow-listing, and a Docker watchdog keep the service healthy.
 
 ---
 
@@ -37,7 +50,7 @@ UQCGk4IU5nm6dYWjXTx6vSQVOtKO4LQg3m8cRcq1eQo7vhCl
 
 ## 📋 **Prerequisites**
 
-- **Python 3.8+** (for native installation)
+- **Python 3.10+** (for native installation; Docker uses Python 3.12)
 - **Docker & Docker Compose** (for containerized deployment)
 - **Telegram Bot Token** from [@BotFather](https://t.me/BotFather)
 - **Domain with Cloudflare** (optional, for production with Cloudflare Tunnel)
@@ -454,6 +467,18 @@ curl https://webhook.yourdomain.com/health
 
 ## 🤝 **Contributing**  
 Contributions are welcome! If you have ideas, bug fixes, or improvements, please open an issue or submit a pull request. Follow standard GitHub practices and ensure your code aligns with the project's guidelines.
+
+### 🧹 Code Quality
+
+The codebase is strictly typed and linted. Configuration lives in `pyproject.toml`.
+
+```bash
+# Lint (ruff) and type-check (mypy)
+python -m ruff check .
+python -m mypy
+```
+
+All contributions must pass both checks with zero errors before being merged.
 
 ---
 

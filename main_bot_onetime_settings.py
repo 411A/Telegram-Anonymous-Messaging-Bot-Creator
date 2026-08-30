@@ -1,8 +1,9 @@
-import aiohttp
 import asyncio
-from src.utils.responses import ResponseKey, CommandKey
-from src.configs.settings import MAIN_BOT_TOKEN
 
+import aiohttp
+
+from src.configs.settings import MAIN_BOT_TOKEN
+from src.utils.responses import CommandKey, ResponseKey
 
 # Configuration using ResponseKey Enum
 MAIN_BOT_COMMANDS = CommandKey.MAIN_BOT_COMMANDS
@@ -15,7 +16,7 @@ async def call_api(session, method, params, lang_code=None):
     url = f"https://api.telegram.org/bot{MAIN_BOT_TOKEN}/{method}"
     if lang_code:
         params['language_code'] = lang_code
-    
+
     try:
         async with session.post(url, json=params) as response:
             data = await response.json()
@@ -48,18 +49,18 @@ async def configure_bot():
             for lang in ['en', 'fa']:
                 # Get the Response object from Enum member
                 response_obj = response_key.value
-                
+
                 # Get language-specific value
                 params = {param_key: getattr(response_obj, lang)}
-                
+
                 # Special handling for commands
                 if method == 'setMyCommands':
                     params = {'commands': params[param_key]}
-                
+
                 tasks.append(call_api(session, method, params, lang))
 
         results = await asyncio.gather(*tasks)
-        
+
         for result in results:
             if result['success']:
                 print(f"({result['lang'].upper()}) {result['method']} succeeded")

@@ -1,41 +1,53 @@
-from telegram import Update, CallbackQuery, Message, MessageId
-from telegram.ext import ContextTypes
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji
+import asyncio
+import logging
+import time
+from collections.abc import Coroutine
+from contextlib import suppress
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+
+from cachetools import TTLCache
+from telegram import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    MessageId,
+    ReactionTypeEmoji,
+    Update,
+)
 from telegram.constants import ParseMode
-from telegram.error import Forbidden, BadRequest, NetworkError, TimedOut, ChatMigrated
-from utils.responses import get_response, ResponseKey
-from utils.db_utils import DatabaseManager, Encryptor, AdminManager
-from utils.helpers import generate_anonymous_id, check_language_availability
-from utils.cache import AdminsReplyCache
+from telegram.error import BadRequest, ChatMigrated, Forbidden, NetworkError, TimedOut
+from telegram.ext import ContextTypes
+
 from configs.settings import (
-    SEP,
+    ADMIN_REPLY_TIMEOUT,
+    BTN_EMOJI_ANSWER,
+    BTN_EMOJI_BLOCK,
+    BTN_EMOJI_DELAY,
+    BTN_EMOJI_FORWARD,
+    BTN_EMOJI_NO_HISTORY,
+    BTN_EMOJI_READ,
+    BTN_EMOJI_UNBLOCK,
+    BTN_EMOJI_WITH_HISTORY,
+    CBD_ADMIN_ANSWER,
+    CBD_ADMIN_BLOCK,
+    CBD_ADMIN_CANCEL_ANSWER,
+    CBD_ANON_FORWARD,
     CBD_ANON_NO_HISTORY,
     CBD_ANON_WITH_HISTORY,
-    CBD_ANON_FORWARD,
-    CBD_READ_MESSAGE,
-    CBD_ADMIN_BLOCK,
-    CBD_ADMIN_ANSWER,
-    CBD_ADMIN_CANCEL_ANSWER,
     CBD_DELAY_INFO,
-    BTN_EMOJI_READ,
-    BTN_EMOJI_BLOCK,
-    BTN_EMOJI_UNBLOCK,
-    BTN_EMOJI_ANSWER,
-    BTN_EMOJI_NO_HISTORY,
-    BTN_EMOJI_WITH_HISTORY,
-    BTN_EMOJI_FORWARD,
-    BTN_EMOJI_DELAY,
-    ADMIN_REPLY_TIMEOUT,
+    CBD_READ_MESSAGE,
     CIRCUIT_BREAKER_CACHE_SIZE,
+    CIRCUIT_BREAKER_THRESHOLD,
     CIRCUIT_BREAKER_TTL,
-    CIRCUIT_BREAKER_THRESHOLD
+    SEP,
 )
-import time
-import logging
-import asyncio
-from cachetools import TTLCache
-from datetime import datetime, timezone
-from typing import Optional, Tuple
+from utils.cache import AdminsReplyCache
+from utils.db_utils import AdminManager, DatabaseManager, Encryptor
+from utils.helpers import check_language_availability, generate_anonymous_id
+from utils.responses import ResponseKey, get_response
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +56,17 @@ admins_reply_cache = AdminsReplyCache()
 
 # Circuit breaker: Track recent failures to prevent error message spam
 # If we fail to send error messages CIRCUIT_BREAKER_THRESHOLD+ times in CIRCUIT_BREAKER_TTL seconds, stop trying
-RECENT_ERROR_SEND_FAILURES = TTLCache(maxsize=CIRCUIT_BREAKER_CACHE_SIZE, ttl=CIRCUIT_BREAKER_TTL)
+RECENT_ERROR_SEND_FAILURES: TTLCache[int, int] = TTLCache(maxsize=CIRCUIT_BREAKER_CACHE_SIZE, ttl=CIRCUIT_BREAKER_TTL)
+
+#: Strong references to fire-and-forget background tasks (prevents GC, satisfies RUF006).
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _spawn_background_task(coro: Coroutine[Any, Any, None]) -> None:
+    """Schedule a fire-and-forget background task while keeping a reference to it."""
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 def should_send_error_message(user_id: int) -> bool:
     '''
@@ -54,18 +76,18 @@ def should_send_error_message(user_id: int) -> bool:
     failure_count = RECENT_ERROR_SEND_FAILURES.get(user_id, 0)
     return failure_count < CIRCUIT_BREAKER_THRESHOLD
 
-def record_error_send_failure(user_id: int):
-    '''Record that we failed to send an error message to a user.'''
+def record_error_send_failure(user_id: int) -> None:
+    """Record that we failed to send an error message to a user."""
     current_count = RECENT_ERROR_SEND_FAILURES.get(user_id, 0)
     RECENT_ERROR_SEND_FAILURES[user_id] = current_count + 1
 
-def calculate_message_delay(timestamp_ns: int) -> Optional[int]:
+def calculate_message_delay(timestamp_ns: int) -> int | None:
     '''
     Calculate message delay in seconds.
-    
+
     Args:
         timestamp_ns: Message timestamp in nanoseconds
-        
+
     Returns:
         Delay in seconds if >= 60 seconds, None otherwise
     '''
@@ -79,11 +101,11 @@ def calculate_message_delay(timestamp_ns: int) -> Optional[int]:
 def format_delay(delay_seconds: int, lang: str) -> str:
     '''
     Format delay into human-readable text.
-    
+
     Args:
         delay_seconds: Delay in seconds
         lang: Language code ('en' or 'fa')
-        
+
     Returns:
         Formatted delay string
     '''
@@ -92,43 +114,115 @@ def format_delay(delay_seconds: int, lang: str) -> str:
         if lang == 'fa':
             return f"{BTN_EMOJI_DELAY} {minutes} دقیقه پیش"
         return f"{BTN_EMOJI_DELAY} {minutes} {'minute' if minutes == 1 else 'minutes'} ago"
-    
-    elif delay_seconds < 86400:  # < 1 day
+
+    if delay_seconds < 86400:  # < 1 day
         hours = delay_seconds // 3600
         minutes = (delay_seconds % 3600) // 60
         if minutes == 0:
             if lang == 'fa':
                 return f"{BTN_EMOJI_DELAY} {hours} ساعت پیش"
             return f"{BTN_EMOJI_DELAY} {hours} {'hour' if hours == 1 else 'hours'} ago"
-        else:
-            if lang == 'fa':
-                return f"{BTN_EMOJI_DELAY} {hours} ساعت و {minutes} دقیقه پیش"
-            return f"{BTN_EMOJI_DELAY} {hours}h {minutes}m ago"
-    
-    elif delay_seconds < 604800:  # < 1 week
+        if lang == 'fa':
+            return f"{BTN_EMOJI_DELAY} {hours} ساعت و {minutes} دقیقه پیش"
+        return f"{BTN_EMOJI_DELAY} {hours}h {minutes}m ago"
+
+    if delay_seconds < 604800:  # < 1 week
         days = delay_seconds // 86400
         hours = (delay_seconds % 86400) // 3600
         if hours == 0:
             if lang == 'fa':
                 return f"{BTN_EMOJI_DELAY} {days} روز پیش"
             return f"{BTN_EMOJI_DELAY} {days} {'day' if days == 1 else 'days'} ago"
-        else:
-            if lang == 'fa':
-                return f"{BTN_EMOJI_DELAY} {days} روز و {hours} ساعت پیش"
-            return f"{BTN_EMOJI_DELAY} {days}d {hours}h ago"
-    
-    else:  # >= 1 week
-        days = delay_seconds // 86400
         if lang == 'fa':
-            return f"{BTN_EMOJI_DELAY} {days} روز پیش"
-        return f"{BTN_EMOJI_DELAY} {days} days ago"
+            return f"{BTN_EMOJI_DELAY} {days} روز و {hours} ساعت پیش"
+        return f"{BTN_EMOJI_DELAY} {days}d {hours}h ago"
+
+    # >= 1 week
+    days = delay_seconds // 86400
+    if lang == 'fa':
+        return f"{BTN_EMOJI_DELAY} {days} روز پیش"
+    return f"{BTN_EMOJI_DELAY} {days} days ago"
 
 #region Helpers
 
-async def safe_edit_message_text(message: Message, text: str, user_lang: str, parse_mode=None, reply_markup=None, fallback_query=None):
+@dataclass(frozen=True)
+class CallbackPayload:
+    """An encrypted callback string split into its zero-knowledge components.
+
+    The full encrypted value never lives in one place: ``prefix`` indexes the
+    database row, ``stored`` is persisted, and ``suffix`` only exists inside
+    the Telegram button (``callback_data``).
+    """
+    callback_data: str  # "{kind}{SEP}{prefix}{SEP}{suffix}" — fits in a Telegram button
+    prefix: str         # first 30 chars, database key
+    stored: str         # middle portion, persisted in the database
+    suffix: str         # last 30 chars, only present in the button
+
+
+def build_callback_payload(encryptor: Encryptor, raw: str, kind: str) -> CallbackPayload:
+    """Encrypt a raw callback string and split it for zero-knowledge storage.
+
+    Args:
+        encryptor: The shared encryptor (non-deterministic encryption).
+        raw: The plaintext callback payload.
+        kind: Callback kind prefix (e.g. ``CBD_READ_MESSAGE``).
+
+    Returns:
+        A :class:`CallbackPayload` with its wire-ready parts.
+    """
+    encrypted = encryptor.encrypt(raw)
+    prefix, stored, suffix = encrypted[:30], encrypted[:-30], encrypted[-30:]
+    return CallbackPayload(
+        callback_data=f"{kind}{SEP}{prefix}{SEP}{suffix}",
+        prefix=prefix,
+        stored=stored,
+        suffix=suffix,
+    )
+
+
+def build_admin_controls_keyboard(
+    is_blocked: bool,
+    block_callback_data: str,
+    answer_callback_data: str | None,
+    read_callback_data: str | None = None,
+    delay_button: InlineKeyboardButton | None = None,
+) -> InlineKeyboardMarkup:
+    """Build the admin controls keyboard for a delivered anonymous message.
+
+    Args:
+        is_blocked: Whether the sender is currently blocked (toggles the
+            Block/Unblock button label).
+        block_callback_data: Callback data for the Block/Unblock button.
+        answer_callback_data: Callback data for the Answer button.
+        read_callback_data: Optional callback data for the Read button.
+        delay_button: Optional fully-built delay-info button (first row).
+
+    Returns:
+        The assembled keyboard markup.
+    """
+    block_label = f"{BTN_EMOJI_UNBLOCK} Unblock" if is_blocked else f"{BTN_EMOJI_BLOCK} Block"
+    keyboard = [[
+        InlineKeyboardButton(block_label, callback_data=block_callback_data),
+        InlineKeyboardButton(f"{BTN_EMOJI_ANSWER} Answer", callback_data=answer_callback_data),
+    ]]
+    if read_callback_data:
+        keyboard.insert(0, [InlineKeyboardButton(f"{BTN_EMOJI_READ} Read", callback_data=read_callback_data)])
+    if delay_button is not None:
+        keyboard.insert(0, [delay_button])
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def safe_edit_message_text(
+    message: Message,
+    text: str,
+    user_lang: str,
+    parse_mode: Any | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    fallback_query: CallbackQuery | None = None,
+) -> bool:
     '''
     Safely edit a message with proper network error handling.
-    
+
     Args:
         message: The message to edit
         text: The new text
@@ -136,7 +230,7 @@ async def safe_edit_message_text(message: Message, text: str, user_lang: str, pa
         parse_mode: Parse mode for the text
         reply_markup: Reply markup for the message
         fallback_query: CallbackQuery to use for fallback notifications
-        
+
     Returns:
         bool: True if successful, False otherwise
     '''
@@ -171,15 +265,15 @@ async def safe_edit_message_text(message: Message, text: str, user_lang: str, pa
 def generate_inline_buttons_anonymous(user_lang: str) -> InlineKeyboardMarkup:
     '''
     Generate the inline keyboard markup for anonymous message options.
-    
+
     Creates a keyboard with three buttons:
     1. Send anonymously without history
     2. Send anonymously with history tracking
     3. Forward message with sender name
-    
+
     Args:
         user_lang (str): The language code for button text localization
-        
+
     Returns:
         InlineKeyboardMarkup: The configured keyboard markup with anonymous sending options
     '''
@@ -189,17 +283,17 @@ def generate_inline_buttons_anonymous(user_lang: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(str(get_response(ResponseKey.ANONYMOUS_INLINEBUTTON3, user_lang)), callback_data=CBD_ANON_FORWARD)]
     ])
 
-async def safe_copy_message(original_message: Message, target_chat_id: int, context: ContextTypes.DEFAULT_TYPE, 
-                            fallback_text: Optional[str] = None) -> Tuple[Optional[MessageId], Optional[str]]:
+async def safe_copy_message(original_message: Message, target_chat_id: int, context: ContextTypes.DEFAULT_TYPE,
+                            fallback_text: str | None = None) -> tuple[MessageId | None, str | None]:
     '''
     Copy a message to target chat with unified error handling.
-    
+
     Args:
         original_message: The message to copy
         target_chat_id: The target chat ID
         context: Bot context
         fallback_text: Optional text prefix for fallback (e.g., anonymous ID)
-        
+
     Returns:
         Tuple of (copied_message_id, error_key) - error_key is None on success
     '''
@@ -234,16 +328,16 @@ async def safe_copy_message(original_message: Message, target_chat_id: int, cont
         return None, "ERROR_SENDING_MESSAGE"
 
 async def safe_forward_message(original_message: Message, target_chat_id: int, context: ContextTypes.DEFAULT_TYPE,
-                                sender_name: str) -> Tuple[Optional[Message], Optional[str]]:
+                                sender_name: str) -> tuple[Message | None, str | None]:
     '''
     Forward a message to target chat with unified error handling.
-    
+
     Args:
         original_message: The message to forward
         target_chat_id: The target chat ID
         context: Bot context
         sender_name: HTML-formatted sender name for fallback
-        
+
     Returns:
         Tuple of (forwarded_message, error_key) - error_key is None on success
     '''
@@ -281,20 +375,20 @@ async def safe_forward_message(original_message: Message, target_chat_id: int, c
 #endregion Helpers
 
 #region Admin
-async def handle_admin_answer(query: CallbackQuery, admin_id: int, sender_user_id: int, original_message_id: int, context: ContextTypes.DEFAULT_TYPE):
+async def handle_admin_answer(query: CallbackQuery, admin_id: int, sender_user_id: int, original_message_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     '''
     Handle the admin's answer option for an anonymous message.
-    
+
     Sets up the reply context and initiates a timeout for the admin's response. Creates a cancel button
     for the admin to manually cancel their reply attempt, and stores the reply state in cache.
-    
+
     Args:
         query (CallbackQuery): The callback query from the admin's button press
         admin_id (int): The ID of the admin handling the reply
         sender_user_id (int): The ID of the original message sender
         original_message_id (int): The ID of the original message being replied to
         context (ContextTypes.DEFAULT_TYPE): The context object for the bot
-    
+
     Raises:
         Exception: If there's an error in handling the admin answer process
     '''
@@ -307,10 +401,10 @@ async def handle_admin_answer(query: CallbackQuery, admin_id: int, sender_user_i
     if not query.message.reply_to_message:
         logger.warning("handle_admin_answer: No reply_to_message in callback query message, returning")
         return
-        
+
     user_lang = check_language_availability(query.from_user.language_code or 'en')
     admin_id = int(admin_id)
-    try: 
+    try:
         # Create cancel button keyboard and inform admin
         cancel_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton(get_response(ResponseKey.ADMIN_BUTTON_CANCEL_MANUALLY, user_lang), callback_data=CBD_ADMIN_CANCEL_ANSWER)]
@@ -318,11 +412,11 @@ async def handle_admin_answer(query: CallbackQuery, admin_id: int, sender_user_i
         # Inform the admin to reply within a specific timeout
         wait_msg = await query.message.reply_to_message.reply_text(
             text=get_response(ResponseKey.ADMIN_REPLY_WAIT, user_lang, minutes=round(ADMIN_REPLY_TIMEOUT / 60)),
-            quote=True,
+            do_quote=True,
             parse_mode=ParseMode.HTML,
             reply_markup=cancel_keyboard
         )
-        
+
         # Store the reply state in the cache
         await admins_reply_cache.set(admin_id, {
             'target_user_id': sender_user_id,
@@ -332,7 +426,7 @@ async def handle_admin_answer(query: CallbackQuery, admin_id: int, sender_user_i
         })
 
         # Start a timeout task for cleaning up state after ADMIN_REPLY_TIMEOUT
-        asyncio.create_task(reply_timeout_handler(query, admin_id, context))
+        _spawn_background_task(reply_timeout_handler(query, admin_id, context))
         # Optionally notify that the admin action is being processed
         try:
             await query.answer(get_response(ResponseKey.ADMIN_REPLY_AWAITING, user_lang), show_alert=False)
@@ -383,13 +477,13 @@ async def handle_admin_answer(query: CallbackQuery, admin_id: int, sender_user_i
                 logger.error(f"All notification methods failed: {fallback_err}")
 
 
-async def reply_timeout_handler(query: CallbackQuery, admin_id: int, context: ContextTypes.DEFAULT_TYPE, timeout=ADMIN_REPLY_TIMEOUT):
+async def reply_timeout_handler(query: CallbackQuery, admin_id: int, context: ContextTypes.DEFAULT_TYPE, timeout: int = ADMIN_REPLY_TIMEOUT) -> None:
     '''
     Handle the timeout for admin replies by cleaning up the waiting state.
-    
+
     After the specified timeout period, checks if the admin has responded. If not, updates the wait
     message and removes the reply state from cache.
-    
+
     Args:
         query (CallbackQuery): The original callback query that initiated the reply
         admin_id (int): The ID of the admin whose reply is being timed out
@@ -406,13 +500,11 @@ async def reply_timeout_handler(query: CallbackQuery, admin_id: int, context: Co
         state = await admins_reply_cache.get(admin_id)
         wait_msg: Message | None = state.get('wait_msg') if state else None
         if wait_msg:
-            try:
+            with suppress(Exception):
                 await wait_msg.edit_text(
                     text=get_response(ResponseKey.ADMIN_REPLY_TIMEOUT, user_lang),
                     parse_mode=ParseMode.HTML
                 )
-            except Exception:
-                pass
         # Remove the state from cache
         await admins_reply_cache.remove(admin_id)
 
@@ -420,18 +512,18 @@ async def reply_timeout_handler(query: CallbackQuery, admin_id: int, context: Co
 async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     '''
     Process callback queries for admin control options (block/answer).
-    
+
     Handles the initial processing of admin callback queries, decrypts the callback data,
     and routes to appropriate handlers for specific actions. Manages admin reply states
     and prevents concurrent reply operations.
-    
+
     Args:
         update (Update): The update object containing the callback query
         context (ContextTypes.DEFAULT_TYPE): The context object for the bot
-    
+
     Returns:
         None
-    
+
     Note:
         Expects callback data in format: operation SEP prefix SEP suffix
         For admin callbacks, the decrypted data format is:
@@ -441,32 +533,28 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if query is None:
         logger.warning("handle_admin_callback: No callback query found, returning")
         return
-    
+
     if not query.from_user:
         logger.warning("handle_admin_callback: No user in callback query, returning")
         return
-    
+
     if not query.message or not isinstance(query.message, Message):
         logger.warning("handle_admin_callback: No valid message in callback query, returning")
         return
-    
+
     query_data = query.data
     if not query_data:
         logger.warning("handle_admin_callback: No callback data found, returning")
         return
-        
+
     user_lang = check_language_availability(query.from_user.language_code or 'en')
     admin_id = int(query.from_user.id)
 
-    # Handle cancel reply button click
-    if query_data == CBD_ADMIN_CANCEL_ANSWER:
-        # Check if admin has an ongoing reply operation
-        if await admins_reply_cache.exists(admin_id):
-            # Update the wait message text
-            await query.message.edit_text(get_response(ResponseKey.ADMIN_CANCELED_REPLY_MANUALLY, user_lang))
-            # Clean up the reply state from cache
-            await admins_reply_cache.remove(admin_id)
-            return
+    # Handle cancel reply button click (only if admin has an ongoing reply operation)
+    if query_data == CBD_ADMIN_CANCEL_ANSWER and await admins_reply_cache.exists(admin_id):
+        await query.message.edit_text(get_response(ResponseKey.ADMIN_CANCELED_REPLY_MANUALLY, user_lang))
+        await admins_reply_cache.remove(admin_id)
+        return
 
     try:
         # Expecting data in format: operation SEP prefix SEP suffix
@@ -479,11 +567,10 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         logger.exception(f"Unexpected error extracting prefix and suffix:\n{e}", exc_info=True)
         return
 
-    # Check if there's an ongoing answer operation when trying to start a new one
-    if operation == CBD_ADMIN_ANSWER:
-        if await admins_reply_cache.exists(admin_id):
-            await query.answer(get_response(ResponseKey.ADMIN_ONGOING_REPLY, user_lang), show_alert=True)
-            return
+    # Reject starting a new answer operation while one is already ongoing
+    if operation == CBD_ADMIN_ANSWER and await admins_reply_cache.exists(admin_id):
+        await query.answer(get_response(ResponseKey.ADMIN_ONGOING_REPLY, user_lang), show_alert=True)
+        return
 
     try:
         db_manager = DatabaseManager()
@@ -510,9 +597,9 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
         # Offload handling to separate tasks so that this callback can quickly return
         if operation == CBD_ADMIN_ANSWER:
-            asyncio.create_task(handle_admin_answer(query, admin_id, sender_user_id, original_message_id, context))
+            _spawn_background_task(handle_admin_answer(query, admin_id, sender_user_id, original_message_id, context))
         elif operation == CBD_ADMIN_BLOCK:
-            asyncio.create_task(handle_admin_block(query, admin_id, context))
+            _spawn_background_task(handle_admin_block(query, admin_id, context))
         else:
             logger.error(f"Unknown operation:\n{operation}")
             await query.answer(get_response(ResponseKey.ADMIN_UNKNOWN_OPERATION, user_lang), show_alert=True)
@@ -521,19 +608,19 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         logger.exception(f"Database or processing error in callback:\n{db_error}")
         await query.answer(get_response(ResponseKey.ADMIN_DATABASE_ERROR, user_lang), show_alert=True)
 
-async def handle_admin_block(query: CallbackQuery, admin_id: int, context: ContextTypes.DEFAULT_TYPE):
+async def handle_admin_block(query: CallbackQuery, admin_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     '''
     Process the admin's block/unblock action for a user.
-    
+
     Toggles the block status of a user and updates the message UI accordingly.
     Handles both blocking and unblocking operations, updating the message text
     and keyboard buttons to reflect the current state.
-    
+
     Args:
         query (CallbackQuery): The callback query from the admin's block/unblock action
         admin_id (int): The ID of the admin performing the action
         context (ContextTypes.DEFAULT_TYPE): The context object for the bot
-    
+
     Raises:
         Exception: If there's an error in the blocking/unblocking process
     '''
@@ -543,18 +630,18 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
     if not query.message or not isinstance(query.message, Message):
         logger.warning("handle_admin_block: No valid message in callback query, returning")
         return
-        
+
     user_lang = check_language_availability(query.from_user.language_code or 'en')
     admin_id = int(admin_id)
     try:
         # Get the bot username
         bot_username = context.bot.username
-        
+
         # Check if the message has a reply markup and buttons
         if not query.message.reply_markup or not query.message.reply_markup.inline_keyboard:
             await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
             return
-        
+
         # Extract the inline keyboard from the message
         keyboard = query.message.reply_markup.inline_keyboard
 
@@ -563,7 +650,7 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
         delay_button = None  # Store the entire button object to preserve text
         raw_admin_callback = None
         answer_callback_data = None
-        
+
         for row in keyboard:
             for button in row:
                 if button.callback_data and isinstance(button.callback_data, str):
@@ -580,33 +667,33 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
             await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
             logger.warning("handle_admin_block: No block callback data found")
             return
-        
+
         if not isinstance(raw_admin_callback, str):
             await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
             logger.warning("handle_admin_block: Invalid callback data type")
             return
-        
+
         operation, prefix, suffix = raw_admin_callback.split(SEP)
-        
+
         # Get the full hash and decrypt it to get sender_user_id
         db_manager = DatabaseManager()
         full_encrypted_hash = await db_manager.get_full_hash_by_prefix(prefix, suffix, 'messages')
         encryptor = Encryptor()
-        
+
         if not full_encrypted_hash:
             await query.answer(get_response(ResponseKey.ADMIN_INVALID_MESSAGE_DATA, user_lang), show_alert=True)
             logger.warning("handle_admin_block: No encrypted hash found for prefix/suffix")
             return
-            
+
         decrypted_data = encryptor.decrypt(full_encrypted_hash)
         option, admin_id_str, sender_user_id_str, original_message_id_str, timestamp = decrypted_data.split(SEP)
-        
+
         # Convert sender_user_id to integer
         sender_user_id = int(sender_user_id_str)
 
         # Check if user is already blocked
         is_blocked = await db_manager.is_user_blocked(sender_user_id, bot_username)
-        
+
         # Update block status and message
         message_text = query.message.text
         if not message_text:
@@ -620,24 +707,14 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
                 # Remove #BLOCKED from message
                 updated_text = message_text.replace("#BLOCKED\n", "")
                 await query.answer(get_response(ResponseKey.ADMIN_USER_UNBLOCKED, user_lang), show_alert=True)
-                # Update keyboard buttons
-                new_keyboard = [
-                    [
-                        InlineKeyboardButton(f"{BTN_EMOJI_BLOCK} Block", callback_data=raw_admin_callback),
-                        InlineKeyboardButton(f"{BTN_EMOJI_ANSWER} Answer", callback_data=answer_callback_data)
-                    ]
-                ]
-                # Preserve Read button if it exists
-                if read_callback_data:
-                    new_keyboard.insert(0, [InlineKeyboardButton(f"{BTN_EMOJI_READ} Read", callback_data=read_callback_data)])
-                # Preserve Delay button if it exists (should be first row)
-                if delay_button:
-                    new_keyboard.insert(0, [delay_button])
-                # Update message with new text and keyboard
-                await query.message.edit_text(
-                    text=updated_text,
-                    reply_markup=InlineKeyboardMarkup(new_keyboard)
+                new_markup = build_admin_controls_keyboard(
+                    is_blocked=False,
+                    block_callback_data=raw_admin_callback,
+                    answer_callback_data=answer_callback_data,
+                    read_callback_data=read_callback_data,
+                    delay_button=delay_button,
                 )
+                await query.message.edit_text(text=updated_text, reply_markup=new_markup)
             else:
                 await query.answer(get_response(ResponseKey.ADMIN_UNBLOCK_ERROR, user_lang), show_alert=True)
                 return
@@ -651,29 +728,19 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
                 else:
                     updated_text = message_text
 
-                # Update keyboard buttons
-                new_keyboard = [
-                    [
-                        InlineKeyboardButton(f"{BTN_EMOJI_UNBLOCK} Unblock", callback_data=raw_admin_callback),
-                        InlineKeyboardButton(f"{BTN_EMOJI_ANSWER} Answer", callback_data=answer_callback_data)
-                    ]
-                ]
-                # Preserve Read button if it exists
-                if read_callback_data:
-                    new_keyboard.insert(0, [InlineKeyboardButton(f"{BTN_EMOJI_READ} Read", callback_data=read_callback_data)])
-                # Preserve Delay button if it exists (should be first row)
-                if delay_button:
-                    new_keyboard.insert(0, [delay_button])
-                # Update message with new text and keyboard
-                await query.message.edit_text(
-                    text=updated_text,
-                    reply_markup=InlineKeyboardMarkup(new_keyboard)
+                new_markup = build_admin_controls_keyboard(
+                    is_blocked=True,
+                    block_callback_data=raw_admin_callback,
+                    answer_callback_data=answer_callback_data,
+                    read_callback_data=read_callback_data,
+                    delay_button=delay_button,
                 )
+                await query.message.edit_text(text=updated_text, reply_markup=new_markup)
                 await query.answer(get_response(ResponseKey.ADMIN_USER_BLOCKED, user_lang), show_alert=True)
             else:
                 await query.answer(get_response(ResponseKey.ADMIN_BLOCK_PROCESS_ERROR, user_lang), show_alert=True)
                 return
-        
+
     except Exception as e:
         logger.exception(f"Error handling admin block option\n{e}")
         # Try to notify user via query.answer first
@@ -696,15 +763,15 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     '''
     Process incoming messages and route them based on sender type (admin/user).
-    
+
     For admin messages, handles ongoing reply operations. For user messages,
     processes them according to user's block status and provides anonymous
     sending options.
-    
+
     Args:
         update (Update): The update object containing the message
         context (ContextTypes.DEFAULT_TYPE): The context object for the bot
-    
+
     Returns:
         None
     '''
@@ -712,38 +779,38 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not message:
         logger.warning("handle_messages: No effective message found, returning")
         return
-    
+
     user = update.effective_user
     if not user:
         logger.warning("handle_messages: No effective user found, returning")
         return
-    
+
     # Get user language code
     user_lang = check_language_availability(user.language_code or 'en')
     # Get bot's username
     bot_username = context.bot.username
     # Get user ID from the message
     user_id = user.id
-    
+
     # Get singleton instances
     db_manager = DatabaseManager()
     admin_manager = AdminManager()
-    
-    
+
+
     #* Handle admin message
     # Check if sender is admin
     is_admin = await admin_manager.is_admin(user_id, bot_username)
-    
+
     if is_admin:
         # Check if admin has an active reply context in the cache
         admin_reply_state = await admins_reply_cache.get(user_id)
-        
+
         if admin_reply_state:
             # Route to admin message handler
             try:
                 target_user_id = admin_reply_state.get('target_user_id')
                 original_message_id = admin_reply_state.get('original_message_id')
-                                
+
                 # 1. Get sender's id
                 sender_user_id = user.id
                 # 2. Get message_id
@@ -751,48 +818,43 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 # 3. Get Unix timestamp from when admin actually sent the reply (not when webhook arrived)
                 # Convert to nanoseconds for precision
                 timestamp_ns = int(message.date.timestamp() * 1_000_000_000)
-                                
+
                 # Construct the callback string for read callback
                 raw_read_callback = f"{sender_user_id}{SEP}{message_id}{SEP}{timestamp_ns}"
-                # 4. Encrypt the callback string
+                # 4. Encrypt the callback and split it for zero-knowledge storage
                 encryptor = Encryptor()
-                encrypted_read_callback = encryptor.encrypt(raw_read_callback)
-                # Store the encrypted callback in the database (without last 30 characters)
-                read_stored_hash = encrypted_read_callback[:-30]
-                read_button_prefix = encrypted_read_callback[:30]
-                read_button_suffix = encrypted_read_callback[-30:]
-                read_callback = f"{CBD_READ_MESSAGE}{SEP}{read_button_prefix}{SEP}{read_button_suffix}"
-                
+                read_payload = build_callback_payload(encryptor, raw_read_callback, CBD_READ_MESSAGE)
+
                 # Database storage for reads
-                await db_manager.store_partial_hash(read_button_prefix, read_stored_hash, 'reads')
-                
+                await db_manager.store_partial_hash(read_payload.prefix, read_payload.stored, 'reads')
+
                 user_keyboard = [
                     [
-                        InlineKeyboardButton(f"{BTN_EMOJI_READ} Read", callback_data=read_callback),
+                        InlineKeyboardButton(f"{BTN_EMOJI_READ} Read", callback_data=read_payload.callback_data),
                     ],
                 ]
-                
+
                 # Add delay button as first row if admin reply arrived with significant delay
                 delay_seconds = calculate_message_delay(timestamp_ns)
                 if delay_seconds is not None:
                     # Create delay callback data
-                    delay_callback = f"{CBD_DELAY_INFO}{SEP}{read_button_prefix}{SEP}{read_button_suffix}"
+                    delay_callback = f"{CBD_DELAY_INFO}{SEP}{read_payload.prefix}{SEP}{read_payload.suffix}"
                     # Format delay text based on user's language
                     delay_text = format_delay(delay_seconds, user_lang)
                     # Insert delay button as first row
                     delay_button = InlineKeyboardButton(delay_text, callback_data=delay_callback)
                     user_keyboard.insert(0, [delay_button])
-                
+
                 user_markup = InlineKeyboardMarkup(user_keyboard)
 
                 try:
                     # Ensure target_user_id is an integer
                     target_user_id = int(target_user_id) if target_user_id else None
                     original_message_id = int(original_message_id) if original_message_id else None
-                    
+
                     if not target_user_id or not original_message_id:
                         raise ValueError("Invalid target_user_id or original_message_id")
-                    
+
                     try:
                         # Send the admin's reply to the target user
                         await message.copy(
@@ -805,7 +867,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         logger.error("Bot is blocked by user. Cannot send reply.")
                         await message.reply_text(
                             text=get_response(ResponseKey.ADMIN_REPLY_FAILED_USER_BLOCKED_BOT, user_lang),
-                            quote=True,
+                            do_quote=True,
                             parse_mode=ParseMode.HTML
                         )
                         # Clean up the reply state from cache
@@ -818,26 +880,25 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                             logger.warning("Cannot reply: original message was deleted")
                             await message.reply_text(
                                 text=get_response(ResponseKey.ADMIN_REPLY_ORIGINAL_MESSAGE_DELETED, user_lang),
-                                quote=True,
+                                do_quote=True,
                                 parse_mode=ParseMode.HTML
                             )
                             # Clean up the reply state from cache
                             await admins_reply_cache.remove(user_id)
                             return
-                        elif "chat not found" in error_msg:
+                        if "chat not found" in error_msg:
                             # Handle case where the user deleted their chat or blocked the bot
                             logger.warning("Cannot send reply: chat not found.")
                             await message.reply_text(
                                 text=get_response(ResponseKey.ADMIN_REPLY_FAILED_USER_BLOCKED_BOT, user_lang),
-                                quote=True,
+                                do_quote=True,
                                 parse_mode=ParseMode.HTML
                             )
                             # Clean up the reply state from cache
                             await admins_reply_cache.remove(user_id)
                             return
-                        else:
-                            # Re-raise other BadRequest errors
-                            raise
+                        # Re-raise other BadRequest errors
+                        raise
 
                     # Handle the wait message
                     wait_msg: Message | None = admin_reply_state.get('wait_msg')
@@ -850,7 +911,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                                 await original_msg.reply_text(
                                     text=get_response(ResponseKey.ADMIN_REPLY_SENT, user_lang),
                                     parse_mode=ParseMode.HTML,
-                                    quote=True
+                                    do_quote=True
                                 )
                             # Delete the wait message
                             await wait_msg.delete()
@@ -865,15 +926,15 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
                     # Clean up the reply state from cache
                     await admins_reply_cache.remove(user_id)
-                    
+
                 except Exception as e:
-                    logger.error(f"Failed to send admin reply:\n{str(e)}\nStack trace:", exc_info=True)
-                    await message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), quote=True, parse_mode=ParseMode.HTML)
+                    logger.error(f"Failed to send admin reply:\n{e!s}\nStack trace:", exc_info=True)
+                    await message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), do_quote=True, parse_mode=ParseMode.HTML)
                     # Clean up the reply state from cache on error
                     await admins_reply_cache.remove(user_id)
             except Exception as e:
-                logger.error(f"Error in admin reply handler:\n{str(e)}\nStack trace:", exc_info=True)
-                await message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), quote=True, parse_mode=ParseMode.HTML)
+                logger.error(f"Error in admin reply handler:\n{e!s}\nStack trace:", exc_info=True)
+                await message.reply_text(text=get_response(ResponseKey.ADMIN_REPLY_FAILED, user_lang), do_quote=True, parse_mode=ParseMode.HTML)
                 # Clean up the reply state from cache on error
                 await admins_reply_cache.remove(user_id)
         else:
@@ -952,19 +1013,19 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     '''
     Process callback queries for anonymous message sending options.
-    
+
     Handles three types of anonymous sending:
     1. No history - Send message without tracking sender
     2. With history - Send message with anonymous ID for history tracking
     3. Forward - Forward message with sender's name
-    
+
     Implements message encryption, admin control button generation, and
     appropriate message routing based on the selected anonymity option.
-    
+
     Args:
         update (Update): The update object containing the callback query
         context (ContextTypes.DEFAULT_TYPE): The context object for the bot
-    
+
     Returns:
         None
     '''
@@ -973,11 +1034,11 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     if not query:
         logger.warning("handle_anonymous_callback: No callback query found, returning")
         return
-    
+
     if not query.from_user:
         logger.warning("handle_anonymous_callback: No user in callback query, returning")
         return
-    
+
     if not query.message or not isinstance(query.message, Message):
         logger.warning("handle_anonymous_callback: No valid message in callback query, returning")
         return
@@ -986,15 +1047,15 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     if not query_data:
         logger.warning("handle_anonymous_callback: No callback data found, returning")
         return
-        
+
     user_lang = check_language_availability(query.from_user.language_code or 'en')
 
     original_sender_message = query.message.reply_to_message
-    
+
     # Check if the original message still exists
     if not original_sender_message:
         await safe_edit_message_text(
-            query.message, 
+            query.message,
             get_response(ResponseKey.USER_ERROR_ORIGINAL_MESSAGE_DELETED, user_lang),
             user_lang,
             fallback_query=query
@@ -1022,7 +1083,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     # 2. Get receiver admin_id using bot username
     bot_username = context.bot.username
     admin_id = await admin_manager.get_admin_id_from_bot(bot_username)
-    
+
     if not admin_id:
         await safe_edit_message_text(
             query.message,
@@ -1043,51 +1104,35 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
     raw_read_callback = f"{sender_user_id}{SEP}{original_message_id}{SEP}{timestamp_ns}"
     # Construct the callback string for admin-side
     raw_admin_callback = f"{option}{SEP}{admin_id}{SEP}{sender_user_id}{SEP}{original_message_id}{SEP}{timestamp_ns}"
-    # 6. Encrypt the callback strings (reuse encryptor instance)
-    encrypted_read_callback = encryptor.encrypt(raw_read_callback)
-    encrypted_admin_callback = encryptor.encrypt(raw_admin_callback)
-    # Store the encrypted callback in the database (without last 30 characters)
-    read_stored_hash = encrypted_read_callback[:-30]
-    read_button_prefix = encrypted_read_callback[:30]
-    read_button_suffix = encrypted_read_callback[-30:]
-    read_callback = f"{CBD_READ_MESSAGE}{SEP}{read_button_prefix}{SEP}{read_button_suffix}"
-    admin_stored_hash = encrypted_admin_callback[:-30]
-    admin_button_prefix = encrypted_admin_callback[:30]
-    admin_button_suffix = encrypted_admin_callback[-30:]
-    block_callback = f"{CBD_ADMIN_BLOCK}{SEP}{admin_button_prefix}{SEP}{admin_button_suffix}"
-    #print("Block callback length:", len(block_callback.encode('utf-8')))
-    answer_callback = f"{CBD_ADMIN_ANSWER}{SEP}{admin_button_prefix}{SEP}{admin_button_suffix}"
-    #print("Answer callback length:", len(answer_callback.encode('utf-8')))
-    
-    # Generate admin buttons
-    admin_keyboard = [
-        [
-            InlineKeyboardButton(f"{BTN_EMOJI_READ} Read", callback_data=read_callback),
-        ],
-        [
-            InlineKeyboardButton(f"{BTN_EMOJI_BLOCK} Block", callback_data=block_callback),
-            InlineKeyboardButton(f"{BTN_EMOJI_ANSWER} Answer", callback_data=answer_callback)
-        ]
-    ]
-    
-    # Add delay button as first row if message arrived with significant delay
+    # 6. Encrypt the callback strings and split them for zero-knowledge storage
+    read_payload = build_callback_payload(encryptor, raw_read_callback, CBD_READ_MESSAGE)
+    admin_payload = build_callback_payload(encryptor, raw_admin_callback, CBD_ADMIN_BLOCK)
+    answer_callback = f"{CBD_ADMIN_ANSWER}{SEP}{admin_payload.prefix}{SEP}{admin_payload.suffix}"
+    logger.debug("Callback sizes (bytes): block=%d answer=%d",
+                 len(admin_payload.callback_data.encode()), len(answer_callback.encode()))
+
+    # Generate admin buttons (with optional delay button as the first row)
     delay_seconds = calculate_message_delay(timestamp_ns)
+    delay_button: InlineKeyboardButton | None = None
     if delay_seconds is not None:
-        # Create delay callback data
-        delay_callback = f"{CBD_DELAY_INFO}{SEP}{admin_button_prefix}{SEP}{admin_button_suffix}"
         # Format delay text (use 'en' as default for admin messages)
         delay_text = format_delay(delay_seconds, 'en')
-        # Insert delay button as first row
+        delay_callback = f"{CBD_DELAY_INFO}{SEP}{admin_payload.prefix}{SEP}{admin_payload.suffix}"
         delay_button = InlineKeyboardButton(delay_text, callback_data=delay_callback)
-        admin_keyboard.insert(0, [delay_button])
-    
-    admin_markup = InlineKeyboardMarkup(admin_keyboard)
+
+    admin_markup = build_admin_controls_keyboard(
+        is_blocked=False,
+        block_callback_data=admin_payload.callback_data,
+        answer_callback_data=answer_callback,
+        read_callback_data=read_payload.callback_data,
+        delay_button=delay_button,
+    )
 
     # Store hashes in background (don't wait)
     year_month = time.strftime("%Y-%m")
     db_task = asyncio.gather(
-        db_manager.store_partial_hash(admin_button_prefix, admin_stored_hash, 'messages', year_month),
-        db_manager.store_partial_hash(read_button_prefix, read_stored_hash, 'reads'),
+        db_manager.store_partial_hash(admin_payload.prefix, admin_payload.stored, 'messages', year_month),
+        db_manager.store_partial_hash(read_payload.prefix, read_payload.stored, 'reads'),
         return_exceptions=True
     )
 
@@ -1103,7 +1148,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                     fallback_query=query
                 )
                 return
-            
+
             try:
                 # Send admin controls
                 await context.bot.send_message(
@@ -1117,7 +1162,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
             except Exception as admin_e:
                 logger.warning(f"Failed to send admin controls:\n{admin_e}")
                 # Still confirm to user since message was copied successfully
-            
+
             # Confirm to user
             await safe_edit_message_text(
                 query.message,
@@ -1133,13 +1178,13 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                 user_lang,
                 fallback_query=query
             )
-        
+
     elif query_data == CBD_ANON_WITH_HISTORY:
         try:
             # Generate an anonymous ID to let admin track the history with this anonymous user
             sender_user_first_name = query.from_user.first_name
             anon_id = generate_anonymous_id(sender_user_id, sender_user_first_name, with_history=True)
-            
+
             copied_msg, error_key = await safe_copy_message(original_sender_message, admin_id, context, anon_id)
             if error_key or not copied_msg:
                 await db_task
@@ -1150,7 +1195,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                     fallback_query=query
                 )
                 return
-            
+
             try:
                 # Send admin controls with anonymous ID
                 await context.bot.send_message(
@@ -1164,7 +1209,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
             except Exception as admin_e:
                 logger.exception(f"Failed to send admin controls:\n{admin_e}")
                 raise
-            
+
             # Confirm to user
             await safe_edit_message_text(
                 query.message,
@@ -1180,12 +1225,12 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                 user_lang,
                 fallback_query=query
             )
-        
+
     elif query_data == CBD_ANON_FORWARD:
         try:
             # Get user's name for forward
             sender_name = f"<code>{query.from_user.first_name} {query.from_user.last_name if query.from_user.last_name else ''}</code>"
-            
+
             forwarded_msg, error_key = await safe_forward_message(original_sender_message, admin_id, context, sender_name)
             if error_key or not forwarded_msg:
                 await db_task
@@ -1196,20 +1241,20 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                     fallback_query=query
                 )
                 return
-            
+
             try:
                 # Send admin controls with user info
                 await forwarded_msg.reply_text(
                     f"{BTN_EMOJI_FORWARD} {sender_name}\n🎛️ Admin controls:",
                     reply_markup=admin_markup,
                     disable_notification=True,
-                    quote=True,
+                    do_quote=True,
                     parse_mode=ParseMode.HTML,
                 )
             except Exception as admin_e:
                 logger.warning(f"Failed to send admin controls:\n{admin_e}")
                 # Still confirm to user since message was forwarded successfully
-            
+
             # Confirm to user
             await safe_edit_message_text(
                 query.message,
@@ -1225,7 +1270,7 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
                 user_lang,
                 fallback_query=query
             )
-        
+
     else:
         # Handle unknown callback data
         await db_task
@@ -1241,20 +1286,20 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
 async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     '''
     Process read callbacks for messages and mark them as read.
-    
+
     Handles the message read status by:
     1. Removing the read button from the message
     2. Decrypting the message details
     3. Sending a read reaction to the original message
     4. Cleaning up the read status data
-    
+
     Args:
         update (Update): The update object containing the callback query
         context (ContextTypes.DEFAULT_TYPE): The context object for the bot
-    
+
     Returns:
         None
-    
+
     Note:
         Uses encrypted message data to maintain sender privacy while
         enabling read status functionality.
@@ -1264,11 +1309,11 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if not query:
             logger.warning("handle_read_callback: No callback query found, returning")
             return
-        
+
         if not query.message or not isinstance(query.message, Message):
             logger.warning("handle_read_callback: No valid message in callback query, returning")
             return
-        
+
         query_data = query.data
         if not query_data:
             logger.warning("handle_read_callback: No callback data found, returning")
@@ -1290,9 +1335,9 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if not query.message.reply_markup or not query.message.reply_markup.inline_keyboard:
             logger.warning("handle_read_callback: No reply markup found, returning")
             return
-            
+
         keyboard = list(map(list, query.message.reply_markup.inline_keyboard))
-        
+
         # Find and remove the Read button (not the delay button!)
         # The Read button has callback_data starting with CBD_READ_MESSAGE
         read_button_found = False
@@ -1312,34 +1357,32 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         # NOW do the slow database operations (after callback answered)
         db_manager = DatabaseManager()
         encryptor = Encryptor()
-        
+
         # Fetch the hash from database
         full_encrypted_hash = await db_manager.get_full_hash_by_prefix(prefix, suffix, 'reads')
-        
+
         if not full_encrypted_hash:
             # Hash not found - still update the keyboard to remove the button
-            try:
+            with suppress(Exception):
                 await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
-            except Exception:
-                pass  # Keyboard update failed, but callback was already answered
             return
 
         # Decrypt the hash to get message details
         decrypted_data = encryptor.decrypt(full_encrypted_hash)
-        sender_user_id, message_id, timestamp = decrypted_data.split(SEP)
+        sender_user_id_str, message_id_str, _timestamp = decrypted_data.split(SEP)
 
         # Convert IDs to integers
-        sender_user_id = int(sender_user_id)
-        message_id = int(message_id)
+        sender_user_id = int(sender_user_id_str)
+        message_id = int(message_id_str)
 
         # Create all the async tasks we need to execute
-        tasks = list()
-        
+        tasks = []
+
         # Task 1: Update the keyboard
         tasks.append(
             query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
         )
-        
+
         # Task 2: Send reaction
         tasks.append(
             context.bot.set_message_reaction(
@@ -1349,15 +1392,15 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 is_big=False
             )
         )
-        
+
         # Task 3: Delete hash from database
         tasks.append(
             db_manager.remove_partial_hash(prefix, 'reads')
         )
-        
+
         # Execute all tasks in parallel for maximum speed
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         # Check results for errors (but don't block - callback already answered)
         for idx, result in enumerate(results):
             if isinstance(result, Exception):
@@ -1382,14 +1425,14 @@ async def handle_read_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_delay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     '''
     Process delay callback to show exact message timestamp.
-    
+
     When user clicks the delay button, shows the exact UTC time when the message
     was originally sent, along with an explanation that it arrived with delay.
-    
+
     Args:
         update (Update): The update object containing the callback query
         context (ContextTypes.DEFAULT_TYPE): The context object for the bot
-    
+
     Returns:
         None
     '''
@@ -1398,11 +1441,11 @@ async def handle_delay_callback(update: Update, context: ContextTypes.DEFAULT_TY
         if not query:
             logger.warning("handle_delay_callback: No callback query found, returning")
             return
-        
+
         if not query.from_user:
             logger.warning("handle_delay_callback: No user in callback query, returning")
             return
-        
+
         query_data = query.data
         if not query_data:
             logger.warning("handle_delay_callback: No callback data found, returning")
@@ -1420,9 +1463,9 @@ async def handle_delay_callback(update: Update, context: ContextTypes.DEFAULT_TY
         # Get the full hash from database
         db_manager = DatabaseManager()
         encryptor = Encryptor()
-        
+
         full_encrypted_hash = await db_manager.get_full_hash_by_prefix(prefix, suffix, 'messages')
-        
+
         if not full_encrypted_hash:
             await query.answer(
                 get_response(ResponseKey.TIMESTAMP_NOT_AVAILABLE, user_lang),
@@ -1434,7 +1477,7 @@ async def handle_delay_callback(update: Update, context: ContextTypes.DEFAULT_TY
             # Decrypt the hash to get message details
             decrypted_data = encryptor.decrypt(full_encrypted_hash)
             parts = decrypted_data.split(SEP)
-            
+
             # Check if timestamp exists (backward compatibility)
             if len(parts) < 5:
                 await query.answer(
@@ -1442,20 +1485,20 @@ async def handle_delay_callback(update: Update, context: ContextTypes.DEFAULT_TY
                     show_alert=True
                 )
                 return
-            
+
             timestamp_ns = int(parts[4])
-            
+
             # Convert to UTC datetime
             timestamp_sec = timestamp_ns / 1_000_000_000
             utc_time = datetime.fromtimestamp(timestamp_sec, tz=timezone.utc)
             formatted_time = utc_time.strftime("%Y/%m/%d %H:%M:%S UTC")
-            
+
             # Show alert with localized message
             await query.answer(
                 get_response(ResponseKey.MESSAGE_DELAYED_INFO, user_lang, time=formatted_time),
                 show_alert=True
             )
-            
+
         except Exception as decrypt_error:
             logger.warning(f"handle_delay_callback: Failed to decrypt or process timestamp:\n{decrypt_error}")
             await query.answer(

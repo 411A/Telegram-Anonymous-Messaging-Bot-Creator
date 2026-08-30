@@ -1,33 +1,39 @@
+"""In-memory async-safe cache for admin reply state."""
 import asyncio
-from typing import Dict, Any, Optional
+from typing import Any, ClassVar, Optional
 
-# High-performance Async-Safe Singleton Cache for Admin Replies
+
 class AdminsReplyCache:
-    _instance = None
+    """High-performance async-safe singleton cache for admin replies.
 
-    def __new__(cls):
+    Maps an admin's user ID to their in-progress reply state. Reads rely on the
+    GIL; writes are serialized through an asyncio lock.
+    """
+
+    _instance: ClassVar[Optional["AdminsReplyCache"]] = None
+
+    def __new__(cls) -> "AdminsReplyCache":
         if cls._instance is None:
-            cls._instance = super(AdminsReplyCache, cls).__new__(cls)
+            instance = super().__new__(cls)
+            instance._cache = {}
+            instance._write_lock = asyncio.Lock()
+            cls._instance = instance
         return cls._instance
 
-    def __init__(self):
-        # Initialize only once
-        if not hasattr(self, '_cache'):
-            self._cache: Dict[int, Dict[str, Any]] = dict()
-            # Use RWLock-like pattern for better performance
-            self._write_lock = asyncio.Lock()
+    _cache: dict[int, dict[str, Any]]
+    _write_lock: asyncio.Lock
 
-    async def set(self, admin_id: int, state: dict) -> None:
+    async def set(self, admin_id: int, state: dict[str, Any]) -> None:
         """Set admin reply state with minimal locking."""
         async with self._write_lock:
             self._cache[admin_id] = state
 
-    async def get(self, admin_id: int) -> Optional[Dict[str, Any]]:
+    async def get(self, admin_id: int) -> dict[str, Any] | None:
         """Get admin reply state without locking for read operations."""
         # Read operations don't need locks in Python due to GIL
         return self._cache.get(admin_id)
 
-    async def remove(self, admin_id: int) -> Optional[Dict[str, Any]]:
+    async def remove(self, admin_id: int) -> dict[str, Any] | None:
         """Remove admin reply state with minimal locking."""
         async with self._write_lock:
             return self._cache.pop(admin_id, None)

@@ -1,21 +1,22 @@
 """Utility functions for the application."""
 
-import re
 import base64
 import hashlib
 import random
+import re
 import string
 import time
-from typing import Optional
-from configs.settings import AVAILABLE_LANGUAGES_LIST
+from typing import cast
+
+from configs.settings import AVAILABLE_LANGUAGES_LIST, AVAILABLE_LANGUAGES_LITERAL
 
 
 def extract_bot_token(text: str) -> str:
     """Extract a valid bot token from text using regex.
-    
+
     Args:
         text (str): The text containing the bot token.
-        
+
     Returns:
         str: The extracted bot token if found, empty string otherwise.
     """
@@ -33,21 +34,30 @@ def shorten_token(token: str) -> str:
     return f"{token[:3]}…{token[-3:]}"
 
 
-def check_language_availability(language_code: str) -> str:
-    """Check if a language code is available in the supported languages list.
-    
+def check_language_availability(language_code: str | None) -> AVAILABLE_LANGUAGES_LITERAL:
+    """Validate a language code against the supported languages list.
+
     Args:
-        language_code (str): The language code to check.
-        
+        language_code: The language code to check (may be None or unsupported).
+
     Returns:
-        Literal['en', 'fa']: The validated language code. Returns 'en' if the input is not supported.
+        The validated language code; falls back to 'en' when unsupported.
     """
-    global AVAILABLE_LANGUAGES_LIST
-    return language_code if language_code in AVAILABLE_LANGUAGES_LIST else 'en'
+    return cast(AVAILABLE_LANGUAGES_LITERAL, language_code) if language_code in AVAILABLE_LANGUAGES_LIST else 'en'
 
 
-def generate_anonymous_id(user_id: int, user_fname: Optional[str] = None, with_history: bool = False) -> str:
-    '''Generate a unique, hashtag-friendly anonymous ID.'''
+def generate_anonymous_id(user_id: int, user_fname: str | None = None, with_history: bool = False) -> str:
+    """Generate a unique, hashtag-friendly anonymous ID.
+
+    Args:
+        user_id: Telegram user ID used as hash seed.
+        user_fname: Optional first name, mixed into the seed.
+        with_history: When True the ID is deterministic (stable per user) and
+            prefixed with '#'; otherwise it is randomized per message.
+
+    Returns:
+        The anonymous ID (10 alphanumeric chars, optionally '#'-prefixed).
+    """
     seed = f"{user_id}{user_fname}"
     if not with_history:
         seed = f"{seed}_{int(time.time())}_{random.randint(1000, 9999)}"

@@ -1,7 +1,14 @@
-from pathlib import Path
-from typing import Final, Literal
-import os
+"""Central application configuration.
+
+Loads environment variables, exposes typed module-level constants used across
+the application, and validates that all required environment variables are set
+at import time (fail-fast for container restarts).
+"""
 import ipaddress
+import os
+from pathlib import Path
+from typing import Final, Literal, TypeAlias
+
 from dotenv import load_dotenv
 
 # Base directory = one level up from src/
@@ -25,11 +32,11 @@ LOGGER_FILE_LEVEL: Final = os.getenv('LOGGER_FILE_LEVEL', 'ERROR').upper()
 
 # Retry settings for Infisical when running headless (no TTY)
 # Seconds between retries
-INFISICAL_RETRY_DELAY = 60
+INFISICAL_RETRY_DELAY: Final[int] = 60
 # Max retries before giving up (30 minutes total)
-INFISICAL_MAX_RETRIES = 30
+INFISICAL_MAX_RETRIES: Final[int] = 30
 
-AVAILABLE_LANGUAGES_LITERAL: Final = Literal['en', 'fa']
+AVAILABLE_LANGUAGES_LITERAL: TypeAlias = Literal['en', 'fa']
 AVAILABLE_LANGUAGES_LIST: Final = ['en', 'fa']
 # Cache maximum 100 active bots in memory
 MAX_IN_MEMORY_ACTIVE_BOTS: Final = 100
@@ -55,14 +62,14 @@ CIRCUIT_BREAKER_TTL: Final = 60
 # Number of consecutive failures before circuit opens
 CIRCUIT_BREAKER_THRESHOLD: Final = 3
 
-# Separator character
-SEP = '|'
+# Separator character used in callback payload serialization
+SEP: Final[str] = '|'
 
-SQLITE_DATABASE_NAME = BASE_DIR / DATA_FOLDER_NAME / 'DATA.db'
-SECURE_CONFIG_FILE = BASE_DIR / SECURE_CONFIG_FOLDER_NAME / 'config.secure'
+SQLITE_DATABASE_NAME: Final[Path] = BASE_DIR / DATA_FOLDER_NAME / 'DATA.db'
+SECURE_CONFIG_FILE: Final[Path] = BASE_DIR / SECURE_CONFIG_FOLDER_NAME / 'config.secure'
 # The file where safety check differences are stored
-DIFFERENCES_FILE_NAME: Final = BASE_DIR / DIFF_FOLDER_NAME / 'all_differences.md'
-GITHUB_CHECKER_FILENAME = BASE_DIR / 'src' / 'utils' / 'github_checker.py'
+DIFFERENCES_FILE_NAME: Final[Path] = BASE_DIR / DIFF_FOLDER_NAME / 'all_differences.md'
+GITHUB_CHECKER_FILENAME: Final[Path] = BASE_DIR / 'src' / 'utils' / 'github_checker.py'
 
 # GitHub repository details for the safety checker
 DEVELOPER_GITHUB_USERNAME: Final = "411A"
@@ -94,7 +101,7 @@ CBD_RETRY_REGISTER: Final = "retry_register"
 
 # Telegram webhook IP ranges
 # https://core.telegram.org/resources/cidr.txt
-TELEGRAM_IP_RANGES = [
+TELEGRAM_IP_RANGES: Final[list[str]] = [
     # IPv4 ranges
     '91.108.56.0/22',
     '91.108.4.0/22',
@@ -114,21 +121,32 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # Replace with exact IPs/CIDRs of proxies you control (cloudflared container, nginx, etc.)
-DOCKER_NETWORK_IP = os.getenv('DOCKER_NETWORK_IP', '').strip()
-TRUSTED_PROXY_CIDRS = list()
-if DOCKER_NETWORK_IP:
-    for part in [p.strip() for p in DOCKER_NETWORK_IP.split(',') if p.strip()]:
+DOCKER_NETWORK_IP: Final[str] = os.getenv('DOCKER_NETWORK_IP', '').strip()
+
+
+def _parse_trusted_proxy_cidrs(raw: str) -> list[ipaddress._BaseNetwork]:
+    """Parse a comma-separated list of IPs/CIDRs into trusted proxy networks.
+
+    Bare IPs are treated as ``/32`` hosts; invalid entries are skipped.
+    Loopback is always trusted (container-internal traffic).
+    """
+    networks: list[ipaddress._BaseNetwork] = []
+    for part in (p.strip() for p in raw.split(',') if p.strip()):
         try:
-            TRUSTED_PROXY_CIDRS.append(ipaddress.ip_network(part, strict=False))
+            networks.append(ipaddress.ip_network(part, strict=False))
         except ValueError:
             try:
-                TRUSTED_PROXY_CIDRS.append(ipaddress.ip_network(part + '/32', strict=False))
+                networks.append(ipaddress.ip_network(part + '/32', strict=False))
             except ValueError:
-                pass
-TRUSTED_PROXY_CIDRS.append(ipaddress.ip_network('127.0.0.1/32'))
+                continue
+    networks.append(ipaddress.ip_network('127.0.0.1/32'))
+    return networks
+
+
+TRUSTED_PROXY_CIDRS: Final[list[ipaddress._BaseNetwork]] = _parse_trusted_proxy_cidrs(DOCKER_NETWORK_IP)
 
 # CORS settings
-CORS_SETTINGS = {
+CORS_SETTINGS: Final[dict] = {
     'allow_origins': [],  # No origins allowed by default
     'allow_credentials': False,
     'allow_methods': ["POST"],  # Only allow POST for webhooks
@@ -137,23 +155,21 @@ CORS_SETTINGS = {
 #endregion Constants
 
 #region Environment Variables
-MAIN_BOT_TOKEN = os.getenv('MAIN_BOT_TOKEN')
-WEBHOOK_BASE_URL = os.getenv('WEBHOOK_BASE_URL')
-TG_SECRET_TOKEN = os.getenv('TG_SECRET_TOKEN')
-FASTAPI_PORT = int(os.getenv('FASTAPI_PORT') or 13360)
-LOG_FILENAME = os.getenv('LOG_FILENAME') or 'Logs.log'
-LOG_FILENAME = BASE_DIR / LOG_FOLDER_NAME / LOG_FILENAME
-LOGGER_TIMEZONE = os.getenv('LOGGER_TIMEZONE') or 'UTC'
-DEVELOPER_CONTACT_URL = os.getenv('DEVELOPER_CONTACT_URL') or 'https://t.me/ContactHydraBot'
+MAIN_BOT_TOKEN: Final = os.getenv('MAIN_BOT_TOKEN')
+WEBHOOK_BASE_URL: Final = os.getenv('WEBHOOK_BASE_URL')
+TG_SECRET_TOKEN: Final = os.getenv('TG_SECRET_TOKEN')
+FASTAPI_PORT: Final[int] = int(os.getenv('FASTAPI_PORT') or 13360)
+LOG_FILENAME: Final[Path] = BASE_DIR / LOG_FOLDER_NAME / (os.getenv('LOG_FILENAME') or 'Logs.log')
+LOGGER_TIMEZONE: Final[str] = os.getenv('LOGGER_TIMEZONE') or 'UTC'
+DEVELOPER_CONTACT_URL: Final[str] = os.getenv('DEVELOPER_CONTACT_URL') or 'https://t.me/ContactHydraBot'
 
 # Validate required environment variables at startup
-_MISSING_ENV_VARS = []
-if not MAIN_BOT_TOKEN:
-    _MISSING_ENV_VARS.append('MAIN_BOT_TOKEN')
-if not WEBHOOK_BASE_URL:
-    _MISSING_ENV_VARS.append('WEBHOOK_BASE_URL')
-if not TG_SECRET_TOKEN:
-    _MISSING_ENV_VARS.append('TG_SECRET_TOKEN')
+_REQUIRED_ENV_VARS: Final = {
+    'MAIN_BOT_TOKEN': MAIN_BOT_TOKEN,
+    'WEBHOOK_BASE_URL': WEBHOOK_BASE_URL,
+    'TG_SECRET_TOKEN': TG_SECRET_TOKEN,
+}
+_MISSING_ENV_VARS: Final[list[str]] = [name for name, value in _REQUIRED_ENV_VARS.items() if not value]
 
 if _MISSING_ENV_VARS:
     import sys

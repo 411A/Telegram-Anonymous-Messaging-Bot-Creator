@@ -10,64 +10,88 @@ if platform.system() != 'Windows':
     except ImportError:
         pass  # Fall back to default event loop
 
+import io
 import ipaddress
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
-from telegram import Bot, Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaDocument
-from telegram.ext import (
-    Application, CommandHandler, ContextTypes,
-    MessageHandler, CallbackQueryHandler, filters
-)
-from telegram.error import TimedOut, NetworkError, InvalidToken
-from telegram.constants import ParseMode
-from typing import Dict, Optional
-from utils.db_utils import DatabaseManager, Encryptor, AdminManager
-from utils.secure_config import get_encryption_key
-from handlers.anonymous_handler import handle_messages, handle_anonymous_callback, handle_read_callback, handle_admin_callback, handle_delay_callback
-from utils.responses import get_response, ResponseKey, get_commands, CommandKey
-from utils.log_utils import setup_logging, patch_uvicorn_logging
-from utils.github_checker import (
-    GitHubChecker,
-    DIFFERENCES_FILE_NAME,
-)
-from utils.helpers import extract_bot_token, shorten_token, check_language_availability
-from configs.settings import (
-    CORS_SETTINGS, TELEGRAM_IP_RANGES, TRUSTED_PROXY_CIDRS,
-    CBD_ANON_NO_HISTORY,
-    CBD_ANON_WITH_HISTORY,
-    CBD_ANON_FORWARD,
-    CBD_READ_MESSAGE,
-    CBD_ADMIN_BLOCK,
-    CBD_ADMIN_ANSWER,
-    CBD_ADMIN_CANCEL_ANSWER,
-    CBD_DELAY_INFO,
-    CBD_RETRY_REGISTER,
-    MAX_IN_MEMORY_ACTIVE_BOTS,
-    MAIN_BOT_TOKEN,
-    WEBHOOK_BASE_URL,
-    TG_SECRET_TOKEN,
-    FASTAPI_PORT,
-    DEVELOPER_GITHUB_USERNAME,
-    DEVELOPER_GITHUB_REPOSITORY_NAME,
-    GITHUB_CHECKER_FILENAME,
-    TELEGRAM_REQUEST_TIMEOUT,
-    TELEGRAM_CONNECTION_TIMEOUT,
-    TELEGRAM_READ_TIMEOUT,
-    WEBHOOK_DEDUP_CACHE_SIZE,
-    WEBHOOK_DEDUP_TTL
-)
-import uvicorn
 import logging
 import time
-import io
+from collections import defaultdict
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, TypeVar
+
 import aiofiles
+import uvicorn
 
 #! Import cachetools for LRUCache and prepare a per-bot lock dict.
 from cachetools import LRUCache, TTLCache
-from collections import defaultdict
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from telegram import (
+    Bot,
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaDocument,
+    Message,
+    Update,
+    User,
+)
+from telegram.constants import ParseMode
+from telegram.error import InvalidToken, NetworkError, TimedOut
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
+from configs.settings import (
+    CBD_ADMIN_ANSWER,
+    CBD_ADMIN_BLOCK,
+    CBD_ADMIN_CANCEL_ANSWER,
+    CBD_ANON_FORWARD,
+    CBD_ANON_NO_HISTORY,
+    CBD_ANON_WITH_HISTORY,
+    CBD_DELAY_INFO,
+    CBD_READ_MESSAGE,
+    CBD_RETRY_REGISTER,
+    CORS_SETTINGS,
+    DEVELOPER_GITHUB_REPOSITORY_NAME,
+    DEVELOPER_GITHUB_USERNAME,
+    FASTAPI_PORT,
+    GITHUB_CHECKER_FILENAME,
+    MAIN_BOT_TOKEN,
+    MAX_IN_MEMORY_ACTIVE_BOTS,
+    TELEGRAM_CONNECTION_TIMEOUT,
+    TELEGRAM_IP_RANGES,
+    TELEGRAM_READ_TIMEOUT,
+    TELEGRAM_REQUEST_TIMEOUT,
+    TG_SECRET_TOKEN,
+    TRUSTED_PROXY_CIDRS,
+    WEBHOOK_BASE_URL,
+    WEBHOOK_DEDUP_CACHE_SIZE,
+    WEBHOOK_DEDUP_TTL,
+)
+from handlers.anonymous_handler import (
+    handle_admin_callback,
+    handle_anonymous_callback,
+    handle_delay_callback,
+    handle_messages,
+    handle_read_callback,
+)
+from utils.db_utils import AdminManager, DatabaseManager, Encryptor
+from utils.github_checker import (
+    DIFFERENCES_FILE_NAME,
+    GitHubChecker,
+)
+from utils.helpers import check_language_availability, extract_bot_token, shorten_token
+from utils.log_utils import patch_uvicorn_logging, setup_logging
+from utils.responses import CommandKey, ResponseKey, get_commands, get_response
+from utils.secure_config import get_encryption_key
 
 # Initialize logging when module is imported
 setup_logging()
@@ -76,37 +100,50 @@ patch_uvicorn_logging()
 
 logger = logging.getLogger(__name__)
 
-MAIN_BOT_USERNAME = None
+MAIN_BOT_USERNAME: str | None = None
 # Global variables for GitHub checker cache and file data
-GITHUB_CHECK_RESULTS = dict()
-GITHUB_CHECK_HASH = None  # Hash of local files to detect changes
-RUNNING_SCRIPT_DATA = None
-GITHUB_CHECKER_DATA = None
-RUNNING_SCRIPT_SINCE = None
+GITHUB_CHECK_RESULTS: dict[str, list[str]] = {}
+GITHUB_CHECK_HASH: int | None = None  # Hash of local files to detect changes
+RUNNING_SCRIPT_DATA: bytes | None = None
+GITHUB_CHECKER_DATA: bytes | None = None
+RUNNING_SCRIPT_SINCE: str | None = None
 
 # Update deduplication cache: stores update_id for 60 seconds to prevent duplicate processing
 # This prevents webhook retry loops when Telegram resends the same update
-PROCESSED_UPDATES = TTLCache(maxsize=WEBHOOK_DEDUP_CACHE_SIZE, ttl=WEBHOOK_DEDUP_TTL)
+PROCESSED_UPDATES: TTLCache[str, bool] = TTLCache(maxsize=WEBHOOK_DEDUP_CACHE_SIZE, ttl=WEBHOOK_DEDUP_TTL)
 
 # Pre-parse IP networks at startup for faster webhook validation
 TELEGRAM_IP_NETWORKS = [ipaddress.ip_network(net) for net in TELEGRAM_IP_RANGES]
 TRUSTED_PROXY_NETWORKS = [ipaddress.ip_network(net, strict=False) if isinstance(net, str) else net for net in TRUSTED_PROXY_CIDRS]
 
+#: Strong references to fire-and-forget eviction cleanup tasks (prevents GC, satisfies RUF006).
+_BACKGROUND_TASKS: set[asyncio.Future[None]] = set()
+
+
+def _spawn_background_task(awaitable: Awaitable[None]) -> None:
+    """Schedule a fire-and-forget background task while keeping a reference to it."""
+    task = asyncio.ensure_future(awaitable)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
 #! Define a custom LRUCache that calls a cleanup callback on eviction.
 class ApplicationLRUCache(LRUCache):
-    def __init__(self, maxsize, *args, **kwargs):
-        self.on_evicted = kwargs.pop('on_evicted', None)
+    """LRU cache whose evicted values are cleaned up asynchronously."""
+
+    def __init__(self, maxsize: int, *args: Any, on_evicted: Callable[..., Awaitable[None]] | None = None, **kwargs: Any) -> None:
+        self.on_evicted = on_evicted
         super().__init__(maxsize, *args, **kwargs)
 
-    def popitem(self):
+    def popitem(self) -> tuple[Any, Any]:
         key, value = super().popitem()
         if self.on_evicted:
             # Schedule asynchronous cleanup of the bot application.
-            asyncio.create_task(self.on_evicted(key, value))
+            _spawn_background_task(self.on_evicted(key, value))
         return key, value
 
 #! Async cleanup callback when a bot application is evicted from the cache.
-async def cleanup_application(token: str, application: Application):
+async def cleanup_application(token: str, application: Application) -> None:
     short_token = shorten_token(token)
     try:
         await application.stop()
@@ -121,8 +158,16 @@ async def cleanup_application(token: str, application: Application):
     except Exception as e:
         logger.exception(f"Error shutting down bot {short_token} on eviction:\n{e}")
 
-async def _retry_async_call(coro_func, short_token: str, operation: str, max_retries: int = 3):
-    """Execute an async coroutine with retry logic for TimedOut errors."""
+_T = TypeVar("_T")
+
+
+async def _retry_async_call(
+    coro_func: Callable[[], Awaitable[_T]],
+    short_token: str,
+    operation: str,
+    max_retries: int = 3,
+) -> _T:
+    """Execute an async callable with exponential-backoff retries on TimedOut."""
     retry_delay = 2
     for attempt in range(max_retries):
         try:
@@ -138,30 +183,52 @@ async def _retry_async_call(coro_func, short_token: str, operation: str, max_ret
         except Exception as e:
             logger.error(f"Failed to {operation} for {short_token}: {type(e).__name__}")
             raise
+    raise RuntimeError("unreachable")  # pragma: no cover - satisfies type checkers
 
 # Global LRU cache to store active user-created bot applications.
 active_bots = ApplicationLRUCache(maxsize=MAX_IN_MEMORY_ACTIVE_BOTS, on_evicted=cleanup_application)
 
 #! Dictionary to hold per-bot locks to avoid concurrent reinitializations.
-app_creation_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+app_creation_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 # Global variables to be initialized in the lifespan context
-db_manager: Optional[DatabaseManager] = None
-encryptor: Optional[Encryptor] = None
-admin_manager: Optional[AdminManager] = None
-main_bot_application: Optional[Application] = None
+db_manager: DatabaseManager | None = None
+encryptor: Encryptor | None = None
+admin_manager: AdminManager | None = None
+main_bot_application: Application | None = None
 
-async def main_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+@dataclass(frozen=True)
+class UpdateContext:
+    """The validated essentials extracted from an incoming update."""
+    message: Message
+    user: User
+    user_lang: str
+
+
+def _extract_update_context(update: Update, handler_name: str) -> UpdateContext | None:
+    """Validate an update and extract (message, user, user_lang); None if unusable."""
     message = update.effective_message
     if not message:
-        logger.info(f"main_start: No effective message ({message}), returning")
-        return
+        logger.info(f"{handler_name}: No effective message ({message}), returning")
+        return None
     user = update.effective_user
     if not user:
-        logger.info(f"main_start: No effective user ({user}), returning")
+        logger.info(f"{handler_name}: No effective user ({user}), returning")
+        return None
+    return UpdateContext(
+        message=message,
+        user=user,
+        user_lang=check_language_availability(user.language_code or 'en'),
+    )
+
+
+async def main_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    ctx = _extract_update_context(update, "main_start")
+    if ctx is None:
         return
-    user_lang = check_language_availability(user.language_code or 'en')
-    
+    message, user_lang = ctx.message, ctx.user_lang
+
     try:
         await message.reply_text(get_response(ResponseKey.WELCOME, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except TimedOut as e:
@@ -183,16 +250,11 @@ async def main_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             logger.error("Failed to send generic error message")
 
-async def main_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.effective_message
-    if not message:
-        logger.info(f"main_about: No effective message ({message}), returning")
+async def main_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    ctx = _extract_update_context(update, "main_about")
+    if ctx is None:
         return
-    user = update.effective_user
-    if not user:
-        logger.info(f"main_about: No effective user ({user}), returning")
-        return
-    user_lang = check_language_availability(user.language_code or 'en')
+    message, user_lang = ctx.message, ctx.user_lang
     if user_lang == "fa":
         button_text = "💎 هدیه رمزارز TON به توسعه‌دهنده"
     else:
@@ -206,12 +268,13 @@ async def main_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
-        quote=True,
+        do_quote=True,
         reply_markup=reply_markup
     )
 
-async def _register_bot_logic(token: str, user, message, user_lang):
-    progress_message = await message.reply_text(get_response(ResponseKey.WAIT_REGISTERING_BOT, user_lang), quote=True, parse_mode=ParseMode.HTML)
+async def _register_bot_logic(token: str, user: User, message: Message, user_lang: str) -> None:
+    """Shared registration flow for /register and the retry button."""
+    progress_message = await message.reply_text(get_response(ResponseKey.WAIT_REGISTERING_BOT, user_lang), do_quote=True, parse_mode=ParseMode.HTML)
 
     try:
         application = await create_and_configure_bot(token)
@@ -251,32 +314,21 @@ async def _register_bot_logic(token: str, user, message, user_lang):
             ]])
         )
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global MAIN_BOT_USERNAME
-    message = update.effective_message
-    if not message:
-        logger.info(f"start: No effective message ({message}), returning")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    ctx = _extract_update_context(update, "start")
+    if ctx is None:
         return
-    user = update.effective_user
-    if not user:
-        logger.info(f"start: No effective user ({user}), returning")
-        return
-    user_lang = check_language_availability(user.language_code or 'en')
+    message, user_lang = ctx.message, ctx.user_lang
     await message.reply_text(get_response(ResponseKey.START_COMMAND, user_lang, BOT_CREATOR_USERNAME=MAIN_BOT_USERNAME), parse_mode=ParseMode.HTML)
 
-async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.effective_message
-    if not message:
-        logger.info(f"privacy: No effective message ({message}), returning")
+async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    ctx = _extract_update_context(update, "privacy")
+    if ctx is None:
         return
-    user = update.effective_user
-    if not user:
-        logger.info(f"privacy: No effective user ({user}), returning")
-        return
-    user_lang = check_language_availability(user.language_code or 'en')
-    await message.reply_text(get_response(ResponseKey.PRIVACY_COMMAND, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True, quote=True)
+    message, user_lang = ctx.message, ctx.user_lang
+    await message.reply_text(get_response(ResponseKey.PRIVACY_COMMAND, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True, do_quote=True)
 
-async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global GITHUB_CHECK_RESULTS, GITHUB_CHECK_HASH, RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME
     user = update.effective_user
     if not user:
@@ -293,12 +345,12 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Get current local hash to detect changes
         local_hashes = await checker._get_local_hashes()
         current_hash = hash(frozenset(local_hashes.items()))
-        
+
         # Regenerate only if files changed or first run
         if current_hash != GITHUB_CHECK_HASH:
             GITHUB_CHECK_HASH = current_hash
             GITHUB_CHECK_RESULTS.clear()
-        
+
         if user_lang not in GITHUB_CHECK_RESULTS:
             await checker.write_line_differences()
             GITHUB_CHECK_RESULTS[user_lang] = await checker.check_integrity(user_lang=user_lang)
@@ -306,7 +358,7 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.warning("GitHub checker returned empty results")
                 GITHUB_CHECK_RESULTS[user_lang] = ["⚠️ No security issues detected"]
     except Exception as e:
-        logger.exception(f"GitHub check failed: {str(e)}")
+        logger.exception(f"GitHub check failed: {e!s}")
         GITHUB_CHECK_RESULTS[user_lang] = ["⚠️ Safety check unavailable"]
 
     try:
@@ -319,16 +371,16 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Prepare the caption message with an emoji and HTML formatting
         try:
-            current_results = "\n".join(current_results)
+            results_text = "\n".join(current_results)
             caption = get_response(
                 ResponseKey.SAFETYCHECK_CAPTION,
                 user_lang,
                 RUNNING_SCRIPT_SINCE=RUNNING_SCRIPT_SINCE,
-                GITHUB_CHECK_RESULTS=current_results
+                GITHUB_CHECK_RESULTS=results_text
             )
         except Exception as e:
             logger.error(f"Error formatting safety check caption:\n{e}")
-            raise ValueError("Failed to format safety check results")
+            raise ValueError("Failed to format safety check results") from e
 
         # Get the filename of the currently running script
         try:
@@ -345,7 +397,7 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
             main_file_to_send.name = running_script_filename
         except Exception as e:
             logger.error(f"Error preparing file data:\n{e}")
-            raise ValueError("Failed to prepare script file data")
+            raise ValueError("Failed to prepare script file data") from e
 
         # Create a media group (album) to send both files in one message
         media_group = [
@@ -361,7 +413,7 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Error preparing GitHub checker data file:\n{e}")
             logger.warning("Continuing without GitHub checker data file")
-        
+
         # Only add differences file if there are actual differences
         try:
             diff_file_path = DIFFERENCES_FILE_NAME
@@ -382,14 +434,14 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise ValueError("No message to reply to")
             media_msgs = await message.reply_media_group(
                 media=media_group,
-                quote=True
+                do_quote=True
             )
-            
+
             # Send caption separately since Telegram doesn't allow captions on document groups
             await media_msgs[0].reply_text(
                 caption,
                 parse_mode=ParseMode.HTML,
-                quote=True,
+                do_quote=True,
                 disable_web_page_preview=True
             )
         except Exception as e:
@@ -398,7 +450,7 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if message:
                 await message.reply_text(
                     get_response(ResponseKey.SAFETYCHECK_ERROR, user_lang),
-                    quote=True
+                    do_quote=True
                 )
 
     except Exception as e:
@@ -408,12 +460,22 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await message.reply_text(
                     get_response(ResponseKey.SAFETYCHECK_FAILED, user_lang),
-                    quote=True
+                    do_quote=True
                 )
             except Exception as send_error:
                 logger.error(f"Failed to send error message:\n{send_error}")
 
-async def configure_bot_interface(bot: Bot, bot_username: str):
+async def _apply_webhook(bot: Bot, token: str, allowed_updates: list[str]) -> None:
+    """Delete any existing webhook and set the expected one for a bot token."""
+    await bot.delete_webhook()
+    await bot.set_webhook(
+        url=f'{WEBHOOK_BASE_URL}/webhook/{token}',
+        allowed_updates=allowed_updates,
+        secret_token=TG_SECRET_TOKEN,
+    )
+
+
+async def configure_bot_interface(bot: Bot, bot_username: str) -> bool:
     """Configure bot settings including description and commands."""
     try:
         for lang in ('en', 'fa'):
@@ -426,7 +488,7 @@ async def configure_bot_interface(bot: Bot, bot_username: str):
             await bot.set_my_commands(commands=bot_commands, language_code=lang)
         return True
     except Exception as e:
-        logger.exception(f"Error configuring bot interface:\n{str(e)}")
+        logger.exception(f"Error configuring bot interface:\n{e!s}")
         raise
 
 async def create_and_configure_bot(token: str) -> Application:
@@ -449,7 +511,7 @@ async def create_and_configure_bot(token: str) -> Application:
         )
         # Get bot instance
         new_bot = application.bot
-        
+
         bot_info = await _retry_async_call(new_bot.get_me, short_token, "getting bot info")
         if bot_info is None:
             raise RuntimeError(f"Failed to get bot info for {short_token}")
@@ -457,20 +519,14 @@ async def create_and_configure_bot(token: str) -> Application:
 
         webhook_url = f'{WEBHOOK_BASE_URL}/webhook/{token}'
         webhook_info = await _retry_async_call(new_bot.get_webhook_info, short_token, "getting webhook info")
-                
+
     except Exception as e:
-        logger.exception(f"Failed to initialize bot {short_token}:\n{str(e)}")
+        logger.exception(f"Failed to initialize bot {short_token}:\n{e!s}")
         raise
 
     try:
         if not webhook_info or not webhook_info.url or webhook_info.url != webhook_url:
-            await new_bot.delete_webhook()
-            # Set new webhook with proper configuration
-            await new_bot.set_webhook(
-                url=webhook_url,
-                allowed_updates=['message', 'callback_query'],
-                secret_token=TG_SECRET_TOKEN,
-            )
+            await _apply_webhook(new_bot, token, allowed_updates=['message', 'callback_query'])
             # Configure bot settings immediately after creation
             if bot_username:
                 await configure_bot_interface(new_bot, bot_username)
@@ -478,7 +534,7 @@ async def create_and_configure_bot(token: str) -> Application:
         else:
             logger.info(f'Webhook already correctly configured for bot {short_token}')
     except Exception as e:
-        logger.error(f"Failed to configure webhook for bot {short_token}:\n{str(e)}")
+        logger.error(f"Failed to configure webhook for bot {short_token}:\n{e!s}")
         raise
 
     application.add_handler(CommandHandler('start', start))
@@ -504,26 +560,21 @@ async def get_application(bot_token: str) -> Application:
             active_bots[bot_token] = await create_and_configure_bot(bot_token)
         return active_bots[bot_token]
 
-async def revoke_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def revoke_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /revoke command to revoke bot access.
-    
+
     Args:
         update (Update): The update containing the command.
         context (ContextTypes.DEFAULT_TYPE): The context object.
     """
-    message = update.effective_message
-    if not message:
-        logger.info(f"revoke_bot: No effective message ({message}), returning")
+    ctx = _extract_update_context(update, "revoke_bot")
+    if ctx is None:
         return
+    message, user_lang = ctx.message, ctx.user_lang
     chat = update.effective_chat
     if not chat:
         logger.info(f"revoke_bot: No effective chat ({chat}), returning")
         return
-    user = update.effective_user
-    if not user:
-        logger.info(f"revoke_bot: No effective user ({user}), returning")
-        return
-    user_lang = check_language_availability(user.language_code or 'en')
 
     # Retrieve the latest chat info which includes the pinned message.
     chat_info = await context.bot.get_chat(chat.id)
@@ -532,7 +583,7 @@ async def revoke_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message.reply_to_message or not (
         chat_info.pinned_message and chat_info.pinned_message.message_id == message.reply_to_message.message_id
     ):
-        await message.reply_text(get_response(ResponseKey.REVOKE_INSTRUCTIONS, user_lang), quote=True, parse_mode=ParseMode.HTML)
+        await message.reply_text(get_response(ResponseKey.REVOKE_INSTRUCTIONS, user_lang), do_quote=True, parse_mode=ParseMode.HTML)
         logger.info(f"revoke_bot: Command not used as reply to pinned message ({message.reply_to_message}), returning")
         return
 
@@ -540,14 +591,14 @@ async def revoke_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Get the token from the pinned message.
         pinned_msg = message.reply_to_message
         if not pinned_msg or not pinned_msg.text or 'Token:' not in pinned_msg.text:
-            await message.reply_text(get_response(ResponseKey.INVALID_PINNED_MESSAGE, user_lang), quote=True, parse_mode=ParseMode.HTML)
+            await message.reply_text(get_response(ResponseKey.INVALID_PINNED_MESSAGE, user_lang), do_quote=True, parse_mode=ParseMode.HTML)
             logger.info(f"revoke_bot: Invalid pinned message ({pinned_msg}), returning")
             return
 
         raw_token = pinned_msg.text.split('Token:')[1].strip()
         token = extract_bot_token(raw_token)
         if not token:
-            await message.reply_text(get_response(ResponseKey.INVALID_TOKEN, user_lang), quote=True, parse_mode=ParseMode.HTML)
+            await message.reply_text(get_response(ResponseKey.INVALID_TOKEN, user_lang), do_quote=True, parse_mode=ParseMode.HTML)
             logger.info(f"revoke_bot: Invalid token extracted ({raw_token}), returning")
             return
 
@@ -574,44 +625,40 @@ async def revoke_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         assert db_manager is not None
         if await db_manager.remove_bot_entry(encrypted_bot_token):
             await pinned_msg.unpin()
-            await message.reply_text(get_response(ResponseKey.REVOKE_SUCCESS, user_lang), quote=True, parse_mode=ParseMode.HTML)
+            await message.reply_text(get_response(ResponseKey.REVOKE_SUCCESS, user_lang), do_quote=True, parse_mode=ParseMode.HTML)
         else:
-            await message.reply_text(get_response(ResponseKey.REVOKE_ERROR, user_lang), quote=True, parse_mode=ParseMode.HTML)
+            await message.reply_text(get_response(ResponseKey.REVOKE_ERROR, user_lang), do_quote=True, parse_mode=ParseMode.HTML)
 
     except Exception as e:
         logger.exception(f"Error revoking bot:\n{e}")
-        await message.reply_text(get_response(ResponseKey.REVOKE_ERROR_DETAIL, user_lang, error=str(e)), quote=True, parse_mode=ParseMode.HTML)
+        await message.reply_text(get_response(ResponseKey.REVOKE_ERROR_DETAIL, user_lang, error=str(e)), do_quote=True, parse_mode=ParseMode.HTML)
 
-async def register_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.effective_message
-    if not message:
-        logger.info(f"register_bot: No effective message ({message}), returning")
+async def register_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    ctx = _extract_update_context(update, "register_bot")
+    if ctx is None:
         return
-    user = update.effective_user
-    if not user:
-        logger.info(f"register_bot: No effective user ({user}), returning")
-        return
-    user_lang = check_language_availability(user.language_code or 'en')
+    message, user, user_lang = ctx.message, ctx.user, ctx.user_lang
     if not context.args:
-        await message.reply_text(get_response(ResponseKey.PROVIDE_TOKEN, user_lang), quote=True, parse_mode=ParseMode.HTML)
+        await message.reply_text(get_response(ResponseKey.PROVIDE_TOKEN, user_lang), do_quote=True, parse_mode=ParseMode.HTML)
         logger.info(f"register_bot: No arguments provided ({context.args}), returning")
         return
 
     # Extract token using regex
     token = extract_bot_token(context.args[0])
     if not token:
-        await message.reply_text(get_response(ResponseKey.INVALID_TOKEN), quote=True, parse_mode=ParseMode.HTML)
+        await message.reply_text(get_response(ResponseKey.INVALID_TOKEN), do_quote=True, parse_mode=ParseMode.HTML)
         logger.info(f"register_bot: Invalid token ({context.args[0]}), returning")
         return
 
     if token in active_bots:
-        await message.reply_text(get_response(ResponseKey.ALREADY_REGISTERED), quote=True, parse_mode=ParseMode.HTML)
+        await message.reply_text(get_response(ResponseKey.ALREADY_REGISTERED), do_quote=True, parse_mode=ParseMode.HTML)
         logger.info("register_bot: Token already registered, returning")
         return
 
     await _register_bot_logic(token, user, message, user_lang)
 
-async def handle_retry_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_retry_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Re-run registration when the user presses the inline retry button."""
     query = update.callback_query
     if not query:
         return
@@ -621,15 +668,18 @@ async def handle_retry_register(update: Update, context: ContextTypes.DEFAULT_TY
         return
     token = data[len(CBD_RETRY_REGISTER):]
     message = query.message
+    if not isinstance(message, Message):
+        return
     user = query.from_user
     user_lang = check_language_availability(user.language_code or 'en')
     await _register_bot_logic(token, user, message, user_lang)
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """FastAPI lifespan: load secrets, DB and the main bot on startup; clean up on shutdown."""
     global RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME, MAIN_BOT_USERNAME, db_manager, encryptor, admin_manager, main_bot_application
 
-    main_app: Optional[Application] = None
+    main_app: Application | None = None
     app.state.main_bot_ready = False
     RUNNING_SCRIPT_SINCE = time.strftime("%Y/%m/%d %H:%M", time.gmtime())
 
@@ -637,12 +687,12 @@ async def lifespan(app: FastAPI):
         try:
             script_path = Path(__file__).resolve()
             logger.info(f"Loading script from: {script_path}")
-            with open(script_path, 'rb') as f:
-                RUNNING_SCRIPT_DATA = f.read()
+            async with aiofiles.open(script_path, 'rb') as f:
+                RUNNING_SCRIPT_DATA = await f.read()
             logger.debug(f"Successfully read {len(RUNNING_SCRIPT_DATA)} bytes")
         except Exception as e:
-            logger.exception(f"File read error:\n{str(e)}")
-            RUNNING_SCRIPT_DATA = None 
+            logger.exception(f"File read error:\n{e!s}")
+            RUNNING_SCRIPT_DATA = None
 
     if GITHUB_CHECKER_DATA is None:
         try:
@@ -652,7 +702,7 @@ async def lifespan(app: FastAPI):
                 GITHUB_CHECKER_DATA = await f.read()
             logger.debug(f"Successfully read GitHub checker data, {len(GITHUB_CHECKER_DATA)} bytes")
         except Exception as e:
-            logger.exception(f"GitHub checker data file read error:\n{str(e)}")
+            logger.exception(f"GitHub checker data file read error:\n{e!s}")
             GITHUB_CHECKER_DATA = None
 
     db_manager = DatabaseManager()
@@ -697,13 +747,7 @@ async def lifespan(app: FastAPI):
         webhook_url = f'{WEBHOOK_BASE_URL}/webhook/{MAIN_BOT_TOKEN}'
         webhook_info = await main_app.bot.get_webhook_info()
         if not webhook_info.url or webhook_info.url != webhook_url:
-            await main_app.bot.delete_webhook()
-            # Set new webhook with proper configuration
-            await main_app.bot.set_webhook(
-                url=webhook_url,
-                allowed_updates=['message'],
-                secret_token=TG_SECRET_TOKEN,
-            )
+            await _apply_webhook(main_app.bot, MAIN_BOT_TOKEN, allowed_updates=['message'])
         else:
             logger.info('Main bot webhook already correctly configured')
 
@@ -717,7 +761,7 @@ async def lifespan(app: FastAPI):
         yield
 
     except Exception as e:
-        logger.exception(f'Error during startup:\n{str(e)}')
+        logger.exception(f'Error during startup:\n{e!s}')
         raise
     finally:
         # Cleanup in finally block to ensure it runs even after errors
@@ -736,7 +780,7 @@ logger.warning("Starting FastAPI app...")
 app = FastAPI(lifespan=lifespan)
 logger.warning("FastAPI initialized.")
 
-def _parse_ip(ip_str: Optional[str]) -> Optional[ipaddress._BaseAddress]:
+def _parse_ip(ip_str: str | None) -> ipaddress._BaseAddress | None:
     """Parse IP address from string, handling IPv6 brackets and port suffixes."""
     if not ip_str:
         return None
@@ -764,14 +808,14 @@ def _update_is_private_chat(update_data: dict) -> bool:
     return False
 
 @app.post('/webhook/{bot_token}')
-async def webhook_handler(bot_token: str, request: Request):
+async def webhook_handler(bot_token: str, request: Request) -> dict[str, str]:
     short_token = shorten_token(bot_token)
-    
+
     # Fast path: validate secret token first (cheapest check)
     received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
     if received_secret != TG_SECRET_TOKEN:
         raise HTTPException(status_code=403, detail="Invalid secret token")
-    
+
     # Parse request body early for dedup check
     update_data = await request.json()
     update_id = update_data.get("update_id")
@@ -783,23 +827,23 @@ async def webhook_handler(bot_token: str, request: Request):
         if update_key in PROCESSED_UPDATES:
             return {"status": "ok", "message": "duplicate"}
         PROCESSED_UPDATES[update_key] = True
-    
+
     # IP validation (use pre-parsed networks)
     client_host = request.client.host if request.client else None
     if not client_host:
         raise HTTPException(status_code=403, detail="Access denied: Invalid client")
-    
+
     peer_ip = _parse_ip(client_host)
-    effective_ip: Optional[ipaddress._BaseAddress] = None
-    
+    effective_ip: ipaddress._BaseAddress | None = None
+
     if peer_ip and any(peer_ip in net for net in TRUSTED_PROXY_NETWORKS):
         xff = request.headers.get("x-forwarded-for")
         if xff:
             effective_ip = _parse_ip(xff.split(",")[0].strip())
-    
+
     if effective_ip is None:
         effective_ip = peer_ip
-    
+
     if effective_ip:
         is_allowed = (
             effective_ip in (ipaddress.ip_address('127.0.0.1'), ipaddress.ip_address('::1')) or
@@ -809,7 +853,7 @@ async def webhook_handler(bot_token: str, request: Request):
         if not is_allowed:
             logger.warning(f"Webhook denied for {short_token}: IP {effective_ip}")
             raise HTTPException(status_code=403, detail="Access denied")
-    
+
     # Get or create bot application
     try:
         application = await get_application(bot_token)
@@ -818,7 +862,7 @@ async def webhook_handler(bot_token: str, request: Request):
         if update_id:
             PROCESSED_UPDATES.pop(f"{short_token}:{update_id}", None)
         return {"status": "error", "message": "Bot creation failed"}
-    
+
     # Queue update for processing
     update_obj = Update.de_json(update_data, application.bot)
     try:
@@ -828,7 +872,7 @@ async def webhook_handler(bot_token: str, request: Request):
         if update_id:
             PROCESSED_UPDATES.pop(f"{short_token}:{update_id}", None)
         return {"status": "error", "message": "Queue overloaded"}
-    
+
     return {"status": "ok"}
 
 def _main_bot_is_running() -> bool:
@@ -838,7 +882,7 @@ def _main_bot_is_running() -> bool:
 @app.get('/health')
 @app.head('/')
 @app.head('/health')
-async def health_check():
+async def health_check() -> dict[str, str]:
     """Health check endpoint for Docker healthcheck and monitoring."""
     if not getattr(app.state, "main_bot_ready", False) or not _main_bot_is_running():
         raise HTTPException(

@@ -1,18 +1,32 @@
-import os
-import sys
-import getpass
-import secrets
+"""Master-password provisioning.
+
+Retrieves the encryption key primarily from an Infisical secrets manager
+(with retry when running headless) and falls back to interactive manual
+entry verified against a local ``config.secure`` file.
+"""
 import base64
+import getpass
+import os
+import secrets
+import sys
 import time
 from pathlib import Path
-
-# Infisical SDK (Correct import for 'infisical-sdk')
-from infisical_sdk import InfisicalSDKClient
 
 # Cryptography (REQUIRED for your manual fallback logic)
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from configs.settings import SECURE_CONFIG_FILE, INFISICAL_RETRY_DELAY, INFISICAL_MAX_RETRIES
+
+# Infisical SDK (Correct import for 'infisical-sdk')
+from infisical_sdk import InfisicalSDKClient
+
+from configs.settings import (
+    INFISICAL_MAX_RETRIES,
+    INFISICAL_RETRY_DELAY,
+    SECURE_CONFIG_FILE,
+)
+
+#: Number of manual password verification attempts before aborting.
+MAX_PASSWORD_ATTEMPTS: int = 3
 
 
 # ==========================================
@@ -35,7 +49,7 @@ def derive_key(password: str, salt: bytes) -> bytes:
     )
     return kdf.derive(password.encode())
 
-def save_config(salt: bytes, key_verification: bytes):
+def save_config(salt: bytes, key_verification: bytes) -> None:
     """Saves the salt and verification hash to disk."""
     with open(SECURE_CONFIG_FILE, 'wb') as f:
         f.write(salt + key_verification)
@@ -55,7 +69,7 @@ def verify_key(password: str, salt: bytes, key_verification: bytes) -> bool:
 
 def get_infisical_secret() -> str | None:
     """
-    Attempts to retrieve 'ANAMA_ENCRYPTOR' from Infisical.
+    Attempts to retrieve the master password from Infisical.
     Returns None if configuration is missing or connection fails.
     """
     # These variables should be loaded from your .env file via Docker
@@ -86,7 +100,7 @@ def get_infisical_secret() -> str | None:
             environment_slug=env_slug,
             secret_path="/"
         )
-        
+
         # FIX: Use .secretValue (camelCase) instead of .secret_value
         return secret_object.secretValue
 
@@ -95,7 +109,7 @@ def get_infisical_secret() -> str | None:
         print("Falling back to manual entry...")
         return None
 
-def sync_local_config(password: str):
+def sync_local_config(password: str) -> None:
     """
     Ensures the local secure config file exists and matches the Infisical password.
     This ensures that if Infisical goes down, the manual fallback will accept
@@ -114,7 +128,7 @@ def sync_local_config(password: str):
         with open(SECURE_CONFIG_FILE, 'rb') as f:
             data = f.read()
             salt, key_verification = data[:32], data[32:]
-        
+
         if not verify_key(password, salt, key_verification):
             print("⚠️ WARNING: The password in Infisical does NOT match your local config file.")
             print("To fix this, you may need to delete the local config file and restart.")
@@ -133,10 +147,10 @@ def get_encryption_key() -> str | None:
     1. Try Infisical (Automated) - with retries if no TTY available
     2. Fallback to Manual Entry (only if TTY available)
     """
-    
+
     is_headless = not is_interactive()
     retry_count = 0
-    
+
     while True:
         # --- Attempt 1: Infisical ---
         infisical_pass = get_infisical_secret()
@@ -148,7 +162,7 @@ def get_encryption_key() -> str | None:
             return infisical_pass
 
         # --- Infisical failed ---
-        
+
         # If running headless (no TTY), retry Infisical instead of falling back to manual
         if is_headless:
             retry_count += 1
@@ -158,51 +172,51 @@ def get_encryption_key() -> str | None:
                 # Return None to let the app handle graceful shutdown
                 # The container will restart and try again
                 return None
-            
+
             print(f"⚠️ Infisical unavailable and no TTY for manual input. Retrying in {INFISICAL_RETRY_DELAY}s... ({retry_count}/{INFISICAL_MAX_RETRIES})")
             time.sleep(INFISICAL_RETRY_DELAY)
             continue
-        
+
         # --- Attempt 2: Manual Fallback (only with TTY) ---
         break
-    
+
     config_path = Path(SECURE_CONFIG_FILE)
-    
+
     # Case A: Initial Setup (No Infisical, No Local Config)
     if not config_path.exists():
         print("Initial setup - please set your encryption password.")
         while True:
             password = getpass.getpass("Enter new encryption password: ")
-            
+
             if password.lower() in ('0', 'exit', 'q'):
                 return None
 
             if len(password) < 12:
                 print("Password must be at least 12 characters long.")
                 continue
-                
+
             confirm = getpass.getpass("Confirm encryption password: ")
             if password != confirm:
                 print("Passwords do not match.")
                 continue
-            
+
             salt = generate_salt()
             key = derive_key(password, salt)
             key_verification = derive_key(base64.b64encode(key).decode(), salt)
             save_config(salt, key_verification)
-            
+
             del confirm # Clean up memory
             return password
-    
+
     # Case B: Verify against Local Config
     with open(SECURE_CONFIG_FILE, 'rb') as f:
         data = f.read()
         salt, key_verification = data[:32], data[32:]
-    
-    max_attempts = 3
+
+    max_attempts = MAX_PASSWORD_ATTEMPTS
     for attempt in range(max_attempts):
         password = getpass.getpass("Enter encryption password: ")
-        
+
         if password.lower() in ('0', 'exit', 'q'):
             return None
 
@@ -212,6 +226,6 @@ def get_encryption_key() -> str | None:
         remaining = max_attempts - attempt - 1
         if remaining > 0:
             print(f"Invalid password. {remaining} attempts remaining.")
-    
+
     print("Maximum password attempts exceeded.")
     return None

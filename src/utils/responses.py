@@ -1,12 +1,24 @@
-from enum import Enum
+"""Localized (en/fa) response and bot-command catalog.
+
+`ResponseKey` enumerates every user-facing message; `get_response` renders a
+key in the requested language with optional formatting parameters.
+"""
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from enum import Enum
+from typing import Any
+
 from configs.settings import (
-    BTN_EMOJI_NO_HISTORY, BTN_EMOJI_WITH_HISTORY, BTN_EMOJI_FORWARD,
-    BTN_EMOJI_BLOCK, BTN_EMOJI_UNBLOCK,
-    DEVELOPER_GITHUB_USERNAME, DEVELOPER_GITHUB_REPOSITORY_NAME,
-    PROJECT_GITHUB_URL, DEVELOPER_CONTACT_URL
+    BTN_EMOJI_BLOCK,
+    BTN_EMOJI_FORWARD,
+    BTN_EMOJI_NO_HISTORY,
+    BTN_EMOJI_UNBLOCK,
+    BTN_EMOJI_WITH_HISTORY,
+    DEVELOPER_CONTACT_URL,
+    DEVELOPER_GITHUB_REPOSITORY_NAME,
+    DEVELOPER_GITHUB_USERNAME,
+    PROJECT_GITHUB_URL,
 )
+
 
 # Use Union to support both string responses and list/dict responses.
 @dataclass(frozen=True)
@@ -16,8 +28,8 @@ class Response:
 
 @dataclass(frozen=True)
 class CommandResponse:
-    en: List[Dict[str, Any]]
-    fa: List[Dict[str, Any]]
+    en: list[dict[str, Any]]
+    fa: list[dict[str, Any]]
 
 class ResponseKey(Enum):
     INVALID_TOKEN = Response(
@@ -635,7 +647,7 @@ def get_response(key: ResponseKey, lang: str = 'en', **kwargs: Any) -> str:
     return message.format(**kwargs) if kwargs else message
 
 
-def get_commands(key: CommandKey, lang: str = 'en') -> List[Dict[str, Any]]:
+def get_commands(key: CommandKey, lang: str = 'en') -> list[dict[str, Any]]:
     """
     Retrieve a list of bot commands.
 

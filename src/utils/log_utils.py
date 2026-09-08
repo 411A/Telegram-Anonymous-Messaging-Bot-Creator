@@ -104,6 +104,11 @@ class WebhookLogFilter(logging.Filter):
             if method == 'GET' and '404' in status_code:
                 return False
 
+            # Silence successful health checks (Docker HEALTHCHECK polls
+            # every 60s); failures still get logged.
+            if isinstance(path, str) and path.split('?')[0] == '/health' and status_code == '200':
+                return False
+
             # Sanitize webhook tokens in path
             if isinstance(path, str) and path.startswith("/webhook/"):
                 args_list[2] = f"/webhook/{shorten_token(path.split('/')[2])}"

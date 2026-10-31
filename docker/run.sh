@@ -693,7 +693,9 @@ BUILD_FLAG=false
 LEAN_FLAG=false
 # Opt-in lean (low-end VPS) mode, dynamic per run - no branches, no file edits:
 #   ./run.sh start --lean   |   ./run.sh --lean start   |   LEAN_MODE=1 ./run.sh start
-if [ "${LEAN_MODE:-0}" = "1" ]; then
+# LEAN_MODE=1 in .env is persistent, so the systemd watchdog (run.sh recover)
+# keeps applying the lean override after reboots and container recreation.
+if [ "${LEAN_MODE:-0}" = "1" ] || [ "$(read_env_value LEAN_MODE)" = "1" ]; then
     LEAN_FLAG=true
 fi
 

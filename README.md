@@ -81,7 +81,7 @@ chmod +x run.sh
 ./run.sh start
 ```
 
-See [docker/README.md](docker/README.md) for complete Docker documentation and [docker/cloudflared/README.md](docker/cloudflared/README.md) for Cloudflare Tunnel setup.
+See [docker/README.md](docker/README.md) for complete Docker documentation, [docker/cloudflared/README.md](docker/cloudflared/README.md) for Cloudflare Tunnel setup, and [docker/MIGRATION.md](docker/MIGRATION.md) for moving an existing deployment to a new VPS.
 
 ### Option 2: 🐍 Python (Development & Testing)
 

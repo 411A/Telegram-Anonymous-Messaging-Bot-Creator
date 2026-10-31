@@ -10,6 +10,7 @@ This guide provides comprehensive instructions for deploying the HiddenEgo Teleg
 - [Manual Setup](#manual-setup)
 - [Container Management](#container-management)
 - [Lean Deployments](#-lean-deployments-low-end-vps--shared-host)
+- [Moving to a New VPS](MIGRATION.md)
 - [Troubleshooting](#troubleshooting)
 - [Security Considerations](#security-considerations)
 - [Volume Management](#volume-management)
@@ -361,13 +362,55 @@ Opt-in per run — nothing is hardcoded, default runs stay full-performance:
 ./run.sh start --lean        # or: LEAN_MODE=1 ./run.sh start
 ```
 
+For a **persistent** low-end deployment, also add this to `.env`:
+
+```bash
+LEAN_MODE=1
+```
+
+`run.sh recover` (used by the systemd watchdog) reads `.env`, so the RAM/CPU caps stay applied after reboots, crashes, and container recreation. Without this line, a watchdog recovery would silently recreate the stack without the lean override.
+
 This loads `docker-compose.lean.yml` on top of the base file: RAM/CPU caps (bot 512m/1 CPU, tunnel 128m/0.5 CPU), memory-backed `/tmp`, calmer restart policy, single uvicorn worker. Override any value in `.env` (see `.env.example`); plain Compose equivalent:
 
 ```bash
 docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.lean.yml up -d
 ```
 
+**Sizing guide (total VPS RAM):**
+
+| VPS RAM | `BOT_MEM_LIMIT` | `TUNNEL_MEM_LIMIT` | `BOT_CPUS` / `TUNNEL_CPUS` | Also |
+|---------|-----------------|--------------------|----------------------------|------|
+| 512 MB | `320m` | `96m` | `0.75` / `0.25` | Add 1–2 GB swap |
+| 1 GB | `448m` | `128m` | `1.0` / `0.5` | 1 GB swap recommended |
+| ≥2 GB | default `512m` | default `128m` | default | Optional |
+
+These are caps, not reservations; the bot usually idles well below them. If the container is OOM-killed (`docker inspect -f '{{.State.OOMKilled}}' hidego-tgbot`), lower `BOT_MEM_LIMIT` only after checking actual usage with `docker stats`.
+
+**Building on a very low-end VPS:** the image build runs `pip install` for the full dependency set and can OOM below ~1 GB RAM. Either add swap first:
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+or build on a stronger machine and copy the image (same CPU architecture — `amd64` vs `arm64` matters):
+
+```bash
+# On the build machine (same architecture):
+docker build -t hidego-tgbot/bot:latest -f docker/Dockerfile .
+docker save hidego-tgbot/bot:latest | gzip > hidego-bot.tar.gz
+scp hidego-bot.tar.gz user@new-vps:
+
+# On the new VPS:
+gunzip -c hidego-bot.tar.gz | docker load
+```
+
+The cloudflared image is tiny and can be built on the VPS.
+
 Stay small over time: `./run.sh prune` (project-scoped, keeps one latest image per service) or `./run.sh prune --full` (also evicts stale builder cache). Sibling projects are never touched.
+
+For a complete clone/backup/migration runbook, see [MIGRATION.md](MIGRATION.md).
 
 ### Direct Docker Commands
 

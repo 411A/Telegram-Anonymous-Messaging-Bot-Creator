@@ -18,5 +18,9 @@ if [ -z "$WEBHOOK_BASE_URL" ]; then
     exit 1
 fi
 
-# Start the application - get_encryption_key() will handle password prompts
-exec python -m uvicorn bot_creator:app --host 0.0.0.0 --port "${FASTAPI_PORT:-13360}"
+# Start the application - get_encryption_key() will handle password prompts.
+# UVICORN_EXTRA_ARGS is an opt-in hook (e.g. set by docker-compose.lean.yml):
+# extra flags are appended only when the operator/lean mode provides them,
+# so default behavior is exactly the plain command below.
+# shellcheck disable=SC2086
+exec python -m uvicorn bot_creator:app --host 0.0.0.0 --port "${FASTAPI_PORT:-13360}" ${UVICORN_EXTRA_ARGS:-}

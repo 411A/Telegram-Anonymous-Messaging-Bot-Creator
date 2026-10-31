@@ -1,24 +1,54 @@
-.git
-.venv
-.mypy_cache
-__pycache__
-*.pyc
+# Kept OUT of the docker build context (image stays lean).
+# This file applies because the build context is the project root (..).
 
+# Version control / mirrors
+.git
+.gitignore
+repo-mirror.git/
+
+# Local virtualenvs (host-only; container builds its own env)
+.venv
+venv/
+ENV/
+env/
+
+# Python bytecode / caches
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.mypy_cache/
+.pytest_cache/
+.coverage*
+
+# Tests (not needed at runtime)
+tests/
+
+# Secrets / local state (mounted as volumes or read-only files, never baked in)
 .env
 config.secure
 secret/
 data/
 logs/
 diff/
-repo-mirror.git/
-
 DATA.db
-Logs.log
 *.db
 *.db-wal
 *.db-shm
+Logs.log
 *.log*
 
+# Tunnel credentials (mounted read-only at runtime)
 docker/cloudflared/credentials.json
 docker/cloudflared/cert.pem
-tests/
+
+# Heavy, never-imported runtime assets (~33MB tutorial video is served from
+# Telegram/URL, not from inside the container; mount it if ever needed)
+src/assets/
+
+# Docs / backups / local tooling (not needed at runtime)
+*.md
+backup_fromdocker*/
+docker/*
+!.dockerignore
+!docker/docker_entrypoint.sh

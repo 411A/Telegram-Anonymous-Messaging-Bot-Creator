@@ -9,6 +9,7 @@ This guide provides comprehensive instructions for deploying the HiddenEgo Teleg
 - [Docker Network Configuration](#docker-network-configuration)
 - [Manual Setup](#manual-setup)
 - [Container Management](#container-management)
+- [Lean Deployments](#-lean-deployments-low-end-vps--shared-host)
 - [Troubleshooting](#troubleshooting)
 - [Security Considerations](#security-considerations)
 - [Volume Management](#volume-management)
@@ -352,6 +353,22 @@ The `run.sh` script provides convenient container management:
 
 Production warning: Docker manual password mode is not unattended-recoverable. If Infisical is not configured, a recreated container may wait for password input after reboot, prune, or `docker compose down`. Use Infisical before installing the watchdog.
 
+## 🪶 Lean Deployments (low-end VPS / shared host)
+
+Opt-in per run — nothing is hardcoded, default runs stay full-performance:
+
+```bash
+./run.sh start --lean        # or: LEAN_MODE=1 ./run.sh start
+```
+
+This loads `docker-compose.lean.yml` on top of the base file: RAM/CPU caps (bot 512m/1 CPU, tunnel 128m/0.5 CPU), memory-backed `/tmp`, calmer restart policy, single uvicorn worker. Override any value in `.env` (see `.env.example`); plain Compose equivalent:
+
+```bash
+docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.lean.yml up -d
+```
+
+Stay small over time: `./run.sh prune` (project-scoped, keeps one latest image per service) or `./run.sh prune --full` (also evicts stale builder cache). Sibling projects are never touched.
+
 ### Direct Docker Commands
 
 ```bash
@@ -443,7 +460,7 @@ docker exec hidego-tgbot ping 8.8.8.8
 - **Non-root user**: Container runs as host user (UID/GID mapping)
 - **No new privileges**: Security option prevents privilege escalation
 - **Read-only .env**: Environment file mounted as read-only
-- **No resource limits**: Unrestricted CPU and memory for optimal performance (Can be restricted by uncommenting the resource limits in `docker-compose.yml`)
+- **No resource limits by default**: unrestricted CPU and memory for optimal performance (opt-in caps: see [Lean Deployments](#-lean-deployments-low-end-vps--shared-host))
 
 ### Network Security
 
@@ -581,10 +598,10 @@ server {
 
 ### Health Monitoring
 
-The compose file already includes this healthcheck:
+The compose file already includes this healthcheck (Python stdlib probe — the image ships no curl binary):
 ```yaml
 healthcheck:
-  test: ["CMD-SHELL", "curl -fsS http://localhost:${FASTAPI_PORT:-13360}/health || exit 1"]
+  test: ["CMD-SHELL", "python -c \"import os,urllib.request;urllib.request.urlopen('http://localhost:'+os.environ.get('FASTAPI_PORT','13360')+'/health',timeout=8)\" || exit 1"]
   interval: 60s
   timeout: 10s
   retries: 3

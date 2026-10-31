@@ -95,11 +95,22 @@ warn_tunnel_partial() {
 }
 
 docker_compose() {
-    docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file "$PROJECT_ROOT/.env" -f "$SCRIPT_DIR/docker-compose.yml" "$@"
+    build_compose_file_args
+    docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file "$PROJECT_ROOT/.env" "${compose_file_args[@]}" "$@"
 }
 
 docker_compose_manual() {
-    docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file "$PROJECT_ROOT/.env" -f "$SCRIPT_DIR/docker-compose.yml" -f "$SCRIPT_DIR/docker-compose.manual.yml" "$@"
+    build_compose_file_args
+    docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file "$PROJECT_ROOT/.env" "${compose_file_args[@]}" -f "$SCRIPT_DIR/docker-compose.manual.yml" "$@"
+}
+
+# Compose file stack: base always, lean override only when opted in via
+# --lean / -l flag or LEAN_MODE=1 (low-end VPS mode, dynamic per run).
+build_compose_file_args() {
+    compose_file_args=(-f "$SCRIPT_DIR/docker-compose.yml")
+    if [ "${LEAN_FLAG:-false}" = true ]; then
+        compose_file_args+=(-f "$SCRIPT_DIR/docker-compose.lean.yml")
+    fi
 }
 
 ensure_directories() {
@@ -147,6 +158,11 @@ up_stack() {
         log_info "Ensuring bot is up."
         docker_compose "${args[@]}" hidego-tgbot
     fi
+
+    # Automatic lightweight cleanup: keep this project's footprint to one
+    # latest image per service. Scoped to our Compose labels only, so sibling
+    # projects are never touched. Failures must not break startup.
+    auto_prune_project || true
 }
 
 container_state() {
@@ -239,6 +255,9 @@ start_stack() {
     local port
     port="$(fastapi_port)"
     log_info "Starting HiddenEgo Bot with UID:GID $USER_UID:$USER_GID"
+    if [ "${LEAN_FLAG:-false}" = true ]; then
+        log_info "Lean mode enabled for this run (RAM/CPU caps + lean uvicorn)."
+    fi
     log_info "Bot will run on port $port."
 
     if infisical_configured; then
@@ -307,6 +326,120 @@ stop_stack() {
     remove_legacy_named_containers
 }
 
+# --- Project-scoped intelligent cleanup -------------------------------------
+# Finds images, containers, volumes, networks and build cache that belong to
+# THIS compose project (label com.docker.compose.project=hidego-tgbot or the
+# exact image names from `docker compose config --images`) and removes
+# outdated ones, keeping exactly ONE LATEST per image repository.
+# Nothing outside this scope is ever touched, so sibling Docker projects
+# sharing the host / base layers / pip cache are safe.
+#   prune_project [safe|full]
+#     safe: exited containers, superseded images, dangling scoped images,
+#           unused scoped volumes/networks. Runs automatically after up/recover.
+#     full: safe + evicts unused builder cache (shared, least-recently-used
+#           only, bounded by --keep-storage) for a FULL cleanup.
+
+project_expected_images() {
+    docker_compose config --images 2>/dev/null || true
+}
+
+project_images_in_use() {
+    {
+        docker_compose ps -q 2>/dev/null | xargs -r docker inspect --format '{{.Image}}' 2>/dev/null || true
+        docker ps --format '{{.Image}}' 2>/dev/null || true
+    } | sort -u
+}
+
+prune_project() {
+    local mode="${1:-safe}"
+    ensure_docker
+
+    log_info "Pruning HiddenEgo Docker resources (mode: $mode, scope: project '$COMPOSE_PROJECT_NAME' only)."
+
+    # 1. Stopped containers of this project (keep running ones untouched).
+    local stopped
+    stopped="$(docker ps -a --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --filter status=exited --filter status=created --filter status=dead --format '{{.ID}}' 2>/dev/null || true)"
+    if [ -n "$stopped" ]; then
+        # shellcheck disable=SC2086
+        docker rm $stopped >/dev/null 2>&1 || true
+        log_info "Removed stopped project containers."
+    fi
+
+    # 2. Superseded images: keep ONE LATEST per repository.
+    local in_use repos repo
+    in_use="$(project_images_in_use)"
+    repos="$(project_expected_images | sort -u)"
+    # Fallback: also cover locally-built images carrying our project label.
+    if [ -z "$repos" ]; then
+        repos="$(docker images --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --format '{{.Repository}}' 2>/dev/null | sort -u || true)"
+    fi
+    for repo in $repos; do
+        [ -n "$repo" ] && [ "$repo" != "<none>" ] || continue
+        local ids keep rest id
+        ids="$(docker images --format '{{.Repository}} {{.ID}} {{.CreatedAt}}' 2>/dev/null | awk -v r="$repo" '$1==r {print $2" "$3" "$4" "$5}' | sort -k2,3 -r | awk '{print $1}' | uniq || true)"
+        [ -n "$ids" ] || continue
+        keep="$(printf '%s\n' "$ids" | head -n 1 || true)"
+        rest="$(printf '%s\n' "$ids" | tail -n +2 || true)"
+        for id in $rest; do
+            if printf '%s\n' "$in_use" | grep -qx "$id"; then
+                continue
+            fi
+            # Never delete an image a running sibling container uses (by tag too).
+            if docker ps --format '{{.Image}}' 2>/dev/null | grep -qx "$id"; then
+                continue
+            fi
+            docker rmi "$id" >/dev/null 2>&1 || true
+        done
+        if [ -n "$rest" ]; then
+            log_info "Kept latest $repo ($keep), removed superseded copies."
+        fi
+    done
+
+    # 3. Dangling images scoped to this project.
+    local dangling
+    dangling="$(docker images --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --filter "dangling=true" --format '{{.ID}}' 2>/dev/null || true)"
+    if [ -n "$dangling" ]; then
+        # shellcheck disable=SC2086
+        docker rmi $dangling >/dev/null 2>&1 || true
+        log_info "Removed dangling project images."
+    fi
+
+    # 4. Unused volumes scoped to this project (bind mounts are unaffected).
+    local vol attached
+    for vol in $(docker volume ls --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --format '{{.Name}}' 2>/dev/null || true); do
+        attached="$(docker ps -q --filter "volume=$vol" 2>/dev/null || true)"
+        if [ -z "$attached" ]; then
+            docker volume rm "$vol" >/dev/null 2>&1 || true
+            log_info "Removed unused volume $vol."
+        fi
+    done
+
+    # 5. Unused networks scoped to this project (never the active one).
+    local net count
+    for net in $(docker network ls --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" --format '{{.ID}}' 2>/dev/null || true); do
+        count="$(docker network inspect -f '{{len .Containers}}' "$net" 2>/dev/null || echo 1)"
+        if [ "$count" = "0" ] || [ "$count" = "<no value>" ]; then
+            docker network rm "$net" >/dev/null 2>&1 || true
+            log_info "Removed unused network $net."
+        fi
+    done
+
+    # 6. Full mode only: evict least-recently-used build cache (shared cache
+    #    is daemon-global; --keep-storage bounds it without harming the
+    #    fresh layers sibling projects need).
+    if [ "$mode" = "full" ]; then
+        docker builder prune -f --keep-storage 1GB >/dev/null 2>&1 || true
+        log_info "Evicted stale builder cache (kept 1GB of most-recent)."
+    fi
+
+    log_success "Prune complete: one latest image per service, scope '$COMPOSE_PROJECT_NAME' only."
+}
+
+# Silent light prune after successful up/recover: never fail the caller.
+auto_prune_project() {
+    prune_project safe >/dev/null 2>&1 || true
+}
+
 cleanup_stack() {
     ensure_docker
     ensure_directories
@@ -315,6 +448,9 @@ cleanup_stack() {
     log_warning "Cleaning containers. Watchdog disabled until the next start."
     docker_compose down --remove-orphans
     remove_legacy_named_containers
+    # Follow with scoped prune so old images/volumes/networks of this project
+    # do not linger next to sibling projects.
+    prune_project safe || true
 
     log_success "Cleanup complete. Run ./run.sh start to enable and recreate the stack."
 }
@@ -538,22 +674,41 @@ Commands:
   install-watchdog [user] Install a systemd timer that runs recover every 2 minutes
   uninstall-watchdog     Remove the systemd timer/service
   watchdog-status        Show systemd watchdog status
-  cleanup                Remove bot/tunnel containers and disable watchdog
+  cleanup                Remove bot/tunnel containers + scoped prune, disable watchdog
+  prune [--full]         Scoped cleanup: keep ONE LATEST image per service, drop
+                         stopped containers, dangling images, unused volumes and
+                         networks of THIS project only (--full also evicts stale
+                         builder cache; sibling projects are never touched)
 
 Options:
   -b, --build            Rebuild image without cache before start
+  -l, --lean             Low-end VPS mode for this run: apply
+                         docker-compose.lean.yml caps (RAM/CPU, tmpfs, lean
+                         uvicorn). Also via LEAN_MODE=1 env. Nothing is
+                         hardcoded; default runs stay full-performance.
 EOF
 }
 
 BUILD_FLAG=false
-COMMAND="${1:-start}"
-
-if [[ "$COMMAND" == "-b" || "$COMMAND" == "--build" ]]; then
-    BUILD_FLAG=true
-    COMMAND="${2:-start}"
-elif [[ "${2:-}" == "-b" || "${2:-}" == "--build" ]]; then
-    BUILD_FLAG=true
+LEAN_FLAG=false
+# Opt-in lean (low-end VPS) mode, dynamic per run - no branches, no file edits:
+#   ./run.sh start --lean   |   ./run.sh --lean start   |   LEAN_MODE=1 ./run.sh start
+if [ "${LEAN_MODE:-0}" = "1" ]; then
+    LEAN_FLAG=true
 fi
+
+# Normalize optional flags from any position into COMMAND + spare args,
+# so downstream "$@" / "${2:-}" handling stays consistent.
+NORMALIZED_ARGS=()
+for _tok in "$@"; do
+    case "$_tok" in
+        -b|--build) BUILD_FLAG=true ;;
+        -l|--lean) LEAN_FLAG=true ;;
+        *) NORMALIZED_ARGS+=("$_tok") ;;
+    esac
+done
+COMMAND="${NORMALIZED_ARGS[0]:-start}"
+set -- "${NORMALIZED_ARGS[@]:-start}"
 
 case "$COMMAND" in
     start|"")
@@ -597,6 +752,13 @@ case "$COMMAND" in
         ;;
     cleanup)
         cleanup_stack
+        ;;
+    prune)
+        if [ "${2:-}" = "--full" ] || [ "${2:-}" = "full" ]; then
+            prune_project full
+        else
+            prune_project safe
+        fi
         ;;
     help|-h|--help)
         usage

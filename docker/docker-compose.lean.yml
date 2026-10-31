@@ -1,0 +1,48 @@
+# Lean / low-end VPS override for HiddenEgo bot.
+# NOT loaded by default. Opt in per run (no branch, no file edits needed):
+#   ./run.sh start --lean
+#   LEAN_MODE=1 ./run.sh start
+# Works combined with manual-password mode (run.sh appends
+# docker-compose.manual.yml after this file automatically).
+#
+# What it does: caps RAM/CPU so this stack stays small next to sibling
+# projects, uses memory-backed /tmp, calms the restart policy, trims tunnel
+# log retention, and tunes uvicorn for a single small worker.
+# All values remain overridable from .env (defaults below are the lean ones).
+
+services:
+  hidego-tgbot:
+    #* Intentional stops stay stopped after daemon reboot (watchdog recreates).
+    restart: unless-stopped
+
+    #* Resource caps - the only hard limits in the whole setup, lean-only.
+    mem_limit: ${BOT_MEM_LIMIT:-512m}
+    mem_reservation: ${BOT_MEM_RESERVATION:-128m}
+    cpus: ${BOT_CPUS:-1.0}
+    pids_limit: 256
+
+    #* Ephemeral writable scratch (memory-backed, auto-cleaned with container).
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+
+    environment:
+      #* Lean server tuning; operator .env value wins when set.
+      UVICORN_EXTRA_ARGS: ${UVICORN_EXTRA_ARGS:---workers 1 --loop uvloop --http httptools --timeout-keep-alive 5}
+
+  cloudflared:
+    restart: unless-stopped
+
+    #* Tunnel is I/O-bound; a tiny slice is enough next to sibling projects.
+    mem_limit: ${TUNNEL_MEM_LIMIT:-128m}
+    mem_reservation: ${TUNNEL_MEM_RESERVATION:-32m}
+    cpus: ${TUNNEL_CPUS:-0.50}
+    pids_limit: 128
+
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

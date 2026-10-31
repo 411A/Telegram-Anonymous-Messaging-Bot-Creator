@@ -1,40 +1,48 @@
 name: hidego-tgbot
 
+# Optional shared-base override (mutual with other Python projects on this host):
+# set PYTHON_BASE=python:3.12-slim in .env so every Python service reuses the
+# same lower image layers instead of storing duplicates. Default is unchanged.
+
 services:
   hidego-tgbot:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        PYTHON_BASE: ${PYTHON_BASE:-python:3.12-slim}
+    image: hidego-tgbot/bot:latest
     container_name: hidego-tgbot
-    
+
     #* Restart policy - revive existing containers after crashes and daemon restarts.
     #* The host watchdog in run.sh handles removed containers/images after prune/down.
     restart: always
     init: true
     stop_grace_period: 45s
-    
+
     #* Health check - marks the container unhealthy when the bot is not ready.
+    #* Python stdlib probe (the image ships no curl binary).
     #* Docker restart policies restart exited containers, not unhealthy ones.
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:${FASTAPI_PORT:-13360}/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request;urllib.request.urlopen('http://localhost:'+os.environ.get('FASTAPI_PORT','13360')+'/health',timeout=8)\" || exit 1"]
       interval: 60s
       timeout: 10s
       retries: 3
       start_period: 120s
-    
+
     #* Run as host user to avoid ownership issues
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
-    
+
     #* TTY and stdin for manual password entry (optional - only needed without Infisical)
     #* When using Infisical, these can be commented out for cleaner auto-restarts
     #* Uncomment if you need manual password input:
     # tty: true
     # stdin_open: true
-    
+
     #* Environment variables from .env file
     env_file:
       - ../.env
-    
+
     #* Port publishing - loopback only by default.
     #* Cloudflare Tunnel reaches the bot over the Compose network by service
     #* name, so no host port is required. This loopback mapping exists only for
@@ -54,13 +62,13 @@ services:
       - ../secret:/app/secret
       - ../diff:/app/diff
       - ../.env:/app/.env:ro
-    
+
     #* Network configuration - static IP keeps allocation deterministic
     #* (cloudflared uses .2, the bot uses .3).
     networks:
       hidego-network:
         ipv4_address: 172.30.0.3
-    
+
     #* Security options
     security_opt:
       - no-new-privileges:true
@@ -71,43 +79,40 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
-    
-    #* Resource limits
-    # deploy:
-    #   resources:
-    #     limits:
-    #       memory: 1G
-    #       cpus: '1.0'
-    #     reservations:
-    #       memory: 512M
-    #       cpus: '0.5'
+
+    labels:
+      org.hidego.project: hidego-tgbot
 
   cloudflared:
     build:
       context: cloudflared
       dockerfile: Dockerfile
+    image: hidego-tgbot/cloudflared:latest
     container_name: hidego-cloudflared
-    
+
+    #* Do not re-pull upstream on every up; update explicitly via rebuild.
+    pull_policy: missing
+
     #* Restart policy
     restart: always
     init: true
     stop_grace_period: 30s
-    
+
     #* Volume mounts for Cloudflare configuration
     volumes:
       - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
       - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
-    
+
     #* Network configuration - must be on same network as bot.
     #* Static IP lets the app trust only this proxy, not the whole subnet.
     networks:
       hidego-network:
         ipv4_address: 172.30.0.2
-    
+
     #* Depends on bot service
     depends_on:
       - hidego-tgbot
-    
+
     #* Security options
     security_opt:
       - no-new-privileges:true
@@ -117,6 +122,9 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+
+    labels:
+      org.hidego.project: hidego-tgbot
 
 networks:
   hidego-network:

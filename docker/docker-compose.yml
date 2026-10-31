@@ -90,6 +90,9 @@ services:
     image: hidego-tgbot/cloudflared:latest
     container_name: hidego-cloudflared
 
+    #* Run as host user so 600 credentials.json stays readable (same as bot).
+    user: "${USER_UID:-1000}:${USER_GID:-1000}"
+
     #* Do not re-pull upstream on every up; update explicitly via rebuild.
     pull_policy: missing
 

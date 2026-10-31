@@ -53,17 +53,20 @@ credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
   - hostname: webhook.yourdomain.ir
-    # IMPORTANT: Use container name instead of localhost
-    # The port should match your FASTAPI_PORT in .env
-    service: http://hidego-tgbot:4114
-  # Default rule: all other requests return 404
+    # Telegram only calls /webhook/<bot_token>. Everything else is rejected.
+    path: ^/webhook/
+    # IMPORTANT: Use the Compose service name, not localhost.
+    # The port must match FASTAPI_PORT in .env (default: 13360).
+    service: http://hidego-tgbot:13360
+  # Default rule: reject all other hosts and paths
   - service: http_status:404
 ```
 
 **Key Changes:**
-- `http://localhost:14143` → `http://hidego-tgbot:4114`
-- Use the **container name** (`hidego-tgbot`) from `docker-compose.yml`
-- Use your actual `FASTAPI_PORT` from `.env` (in your case: `4114`)
+- `http://localhost:PORT` (host-run cloudflared) → `http://hidego-tgbot:PORT` (Dockerized cloudflared)
+- Use the **service name** (`hidego-tgbot`) from `docker-compose.yml`
+- Use your actual `FASTAPI_PORT` from `.env` (for example, `14143`)
+- Keep the `path: ^/webhook/` rule so `/health` and future routes are not public
 
 ### 4. Verify Files
 
@@ -156,18 +159,17 @@ INF Registered tunnel connection connIndex=0 connection=<ID>
 
 ### Test Webhook Connection
 ```bash
-# From inside the bot container
-docker exec -it hidego-tgbot bash
-curl http://localhost:4114/health  # Or your FASTAPI_PORT
+# The cloudflared image is minimal (no shell); test from the bot container.
+docker exec -it hidego-tgbot sh -c 'curl -fsS "http://127.0.0.1:${FASTAPI_PORT}/health"'
 ```
 
 ### Check Network Connectivity
 ```bash
 # Verify both containers are on the same network
-docker network inspect docker_hidego-network
+docker network inspect hidego-tgbot_hidego-network
 
-# Test from cloudflared to bot
-docker exec -it hidego-cloudflared wget -O- http://hidego-tgbot:4114/health
+# Test the Compose service name from inside the bot container
+docker exec -it hidego-tgbot sh -c 'curl -fsS "http://hidego-tgbot:${FASTAPI_PORT}/health"'
 ```
 
 ### Common Issues
@@ -176,19 +178,31 @@ docker exec -it hidego-cloudflared wget -O- http://hidego-tgbot:4114/health
 **Solution**: Ensure both services are on the same Docker network (`hidego-network`)
 
 **Problem**: `connection refused`
-**Solution**: 
+**Solution**:
 - Verify `FASTAPI_PORT` in `.env` matches the port in `config.yml`
 - Check bot is running: `docker ps | grep hidego-tgbot`
 
 **Problem**: `invalid credentials file`
 **Solution**: Verify the credentials file is correctly copied and has correct permissions
 
+**Problem**: Cloudflare returns `error code: 1033`
+**Solution**: The tunnel is not connected. Check `docker ps` and
+`docker logs hidego-cloudflared`; the tunnel must be `Healthy` in the Cloudflare
+dashboard. Also verify outbound `7844/tcp` and `7844/udp` are allowed.
+
 ## 🔐 Security Notes
 
-1. **Never commit credentials**: The `.gitignore` file prevents committing sensitive files
-2. **Read-only mounts**: Configuration files are mounted as read-only (`:ro`)
-3. **No privileged access**: Container runs without additional privileges
-4. **Isolated network**: Containers communicate on private Docker network
+1. **No inbound port**: `cloudflared` only makes outbound connections to Cloudflare on `7844/tcp+udp`. The VPS does not need `80` or `443` open.
+2. **Loopback-only bot port**: Compose publishes `FASTAPI_PORT` on `127.0.0.1`, so even a misconfigured firewall cannot expose it publicly. The tunnel uses the Compose service name, not that host port.
+3. **Path-restricted ingress**: `path: ^/webhook/` means only Telegram's webhook path is routed; every other path returns 404.
+4. **One public port**: Telegram and Cloudflare clients only need `https://webhook.yourdomain.ir` on `443`. Cloudflare's edge also listens on other supported ports for all customers, but you can reject those requests for this hostname with a WAF custom rule:
+   - Expression: `(http.host eq "webhook.yourdomain.ir" and not cf.edge.server_port in {443})`
+   - Action: **Block**
+5. **Protect tunnel credentials**: `chmod 600 credentials.json` and keep it out of Git. Anyone who obtains it can run another connector on the same tunnel and receive webhook traffic (including bot tokens). Rotate the tunnel credentials if they leak.
+6. **Never commit credentials**: The `.gitignore` file prevents committing sensitive files
+7. **Read-only mounts**: Configuration files are mounted as read-only (`:ro`)
+8. **No privileged access**: Container runs without additional privileges
+9. **Isolated network**: Containers communicate on private Docker network; only `172.30.0.1` and `172.30.0.2` are trusted proxies
 
 ## 🌟 Advantages of Dockerized Cloudflare Tunnel
 

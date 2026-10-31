@@ -342,6 +342,55 @@ show_status() {
     fi
 }
 
+security_check() {
+    ensure_docker
+
+    if [ -z "$(container_state hidego-tgbot)" ]; then
+        log_warning "hidego-tgbot is not created yet; start it with ./run.sh start."
+        return 0
+    fi
+
+    local port mapping proxies failed=0
+    port="$(fastapi_port)"
+    mapping="$(docker port hidego-tgbot "${port}/tcp" 2>/dev/null || true)"
+
+    if [ -z "$mapping" ]; then
+        log_success "Bot port ${port} is not published on the host (tunnel-only)."
+    elif printf '%s\n' "$mapping" | grep -Evq '^(127\.0\.0\.1|\[::1\]):'; then
+        log_error "Bot port ${port} is reachable from a non-loopback address:"
+        printf '  %s\n' "$mapping"
+        log_info "Set FASTAPI_BIND_ADDR=127.0.0.1 in .env and recreate the container."
+        failed=1
+    else
+        log_success "Bot port ${port} is loopback-only:"
+        printf '  %s\n' "$mapping"
+    fi
+
+    if [ -n "$(docker port hidego-cloudflared 2>/dev/null || true)" ]; then
+        log_warning "cloudflared publishes host ports; it only needs outbound 7844/tcp+udp:"
+        docker port hidego-cloudflared || true
+        failed=1
+    else
+        log_success "cloudflared publishes no host ports (outbound-only tunnel)."
+    fi
+
+    proxies="$(read_env_value TRUSTED_PROXY_CIDRS)"
+    [ -n "$proxies" ] || proxies="$(read_env_value DOCKER_NETWORK_IP)"
+    if [ -n "$proxies" ]; then
+        log_info "Trusted proxy IPs/CIDRs: ${proxies}"
+        case "$proxies" in
+            *"/8"*|*"/16"*|*"/24"*)
+                log_warning "Trusted proxy range is wider than necessary; prefer /32 entries."
+                ;;
+        esac
+    fi
+
+    if [ "$failed" -ne 0 ]; then
+        return 1
+    fi
+    log_success "No public bot port detected."
+}
+
 run_root() {
     if [ "$(id -u)" -eq 0 ]; then
         "$@"
@@ -482,6 +531,7 @@ Commands:
   stop                   Stop the stack and disable watchdog recovery
   restart                Restart via stop + start
   status                 Show compose/container/watchdog state
+  security-check         Verify the bot port is not publicly exposed
   logs                   Follow bot logs
   shell                  Open a shell in the bot container
   tunnel [cmd]           Manage tunnel: start|stop|restart|logs|status
@@ -521,6 +571,9 @@ case "$COMMAND" in
         ;;
     status|doctor)
         show_status
+        ;;
+    security-check|audit)
+        security_check
         ;;
     logs)
         ensure_docker

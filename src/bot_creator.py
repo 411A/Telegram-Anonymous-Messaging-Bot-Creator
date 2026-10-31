@@ -10,6 +10,7 @@ if platform.system() != 'Windows':
     except ImportError:
         pass  # Fall back to default event loop
 
+import hmac
 import io
 import ipaddress
 import logging
@@ -115,6 +116,7 @@ PROCESSED_UPDATES: TTLCache[str, bool] = TTLCache(maxsize=WEBHOOK_DEDUP_CACHE_SI
 # Pre-parse IP networks at startup for faster webhook validation
 TELEGRAM_IP_NETWORKS = [ipaddress.ip_network(net) for net in TELEGRAM_IP_RANGES]
 TRUSTED_PROXY_NETWORKS = [ipaddress.ip_network(net, strict=False) if isinstance(net, str) else net for net in TRUSTED_PROXY_CIDRS]
+logger.info("Trusted proxy networks: %s", ", ".join(str(net) for net in TRUSTED_PROXY_NETWORKS))
 
 #: Strong references to fire-and-forget eviction cleanup tasks (prevents GC, satisfies RUF006).
 _BACKGROUND_TASKS: set[asyncio.Future[None]] = set()
@@ -790,9 +792,14 @@ def _parse_ip(ip_str: str | None) -> ipaddress._BaseAddress | None:
     elif ':' in s and s.count(':') == 1:
         s = s.split(':')[0]
     try:
-        return ipaddress.ip_address(s)
+        addr = ipaddress.ip_address(s)
     except ValueError:
         return None
+    # Normalize IPv4-mapped IPv6 (for example ::ffff:172.30.0.1) so that
+    # loopback checks and IPv4 CIDR matching behave consistently.
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    return addr
 
 def _update_is_private_chat(update_data: dict) -> bool:
     message = update_data.get("message") or update_data.get("edited_message")
@@ -811,12 +818,47 @@ def _update_is_private_chat(update_data: dict) -> bool:
 async def webhook_handler(bot_token: str, request: Request) -> dict[str, str]:
     short_token = shorten_token(bot_token)
 
-    # Fast path: validate secret token first (cheapest check)
-    received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
-    if received_secret != TG_SECRET_TOKEN:
+    # 1) Authenticate the caller before parsing the body (cheapest check).
+    # Compare bytes: compare_digest rejects non-ASCII str inputs with TypeError.
+    received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") or ""
+    if not hmac.compare_digest(received_secret.encode(), (TG_SECRET_TOKEN or "").encode()):
         raise HTTPException(status_code=403, detail="Invalid secret token")
 
-    # Parse request body early for dedup check
+    # 2) Resolve the real client IP. Only a trusted proxy may forward one.
+    client_host = request.client.host if request.client else None
+    if not client_host:
+        raise HTTPException(status_code=403, detail="Access denied: Invalid client")
+
+    peer_ip = _parse_ip(client_host)
+    if peer_ip is None:
+        raise HTTPException(status_code=403, detail="Access denied: Invalid client")
+
+    effective_ip = peer_ip
+    trusted_proxy = peer_ip.is_loopback or any(peer_ip in net for net in TRUSTED_PROXY_NETWORKS)
+    if trusted_proxy:
+        # Cloudflare overwrites CF-Connecting-IP at its edge, so the client
+        # cannot spoof it. X-Forwarded-For is the fallback for host-run
+        # cloudflared / nginx proxies. Loopback peers may omit both headers
+        # (local tests), but if a header is present it is still validated.
+        forwarded_ip = _parse_ip(request.headers.get("cf-connecting-ip"))
+        if forwarded_ip is None:
+            xff = request.headers.get("x-forwarded-for")
+            if xff:
+                forwarded_ip = _parse_ip(xff.split(",")[0].strip())
+        if forwarded_ip is not None:
+            effective_ip = forwarded_ip
+        elif not peer_ip.is_loopback:
+            logger.warning(f"Webhook denied for {short_token}: trusted proxy sent no client IP")
+            raise HTTPException(status_code=403, detail="Access denied: Missing client IP")
+
+    is_allowed = effective_ip.is_loopback or any(
+        effective_ip in net for net in TELEGRAM_IP_NETWORKS
+    )
+    if not is_allowed:
+        logger.warning(f"Webhook denied for {short_token}: IP {effective_ip}")
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # 3) Parse request body early for dedup check
     update_data = await request.json()
     update_id = update_data.get("update_id")
     if not _update_is_private_chat(update_data):
@@ -827,32 +869,6 @@ async def webhook_handler(bot_token: str, request: Request) -> dict[str, str]:
         if update_key in PROCESSED_UPDATES:
             return {"status": "ok", "message": "duplicate"}
         PROCESSED_UPDATES[update_key] = True
-
-    # IP validation (use pre-parsed networks)
-    client_host = request.client.host if request.client else None
-    if not client_host:
-        raise HTTPException(status_code=403, detail="Access denied: Invalid client")
-
-    peer_ip = _parse_ip(client_host)
-    effective_ip: ipaddress._BaseAddress | None = None
-
-    if peer_ip and any(peer_ip in net for net in TRUSTED_PROXY_NETWORKS):
-        xff = request.headers.get("x-forwarded-for")
-        if xff:
-            effective_ip = _parse_ip(xff.split(",")[0].strip())
-
-    if effective_ip is None:
-        effective_ip = peer_ip
-
-    if effective_ip:
-        is_allowed = (
-            effective_ip in (ipaddress.ip_address('127.0.0.1'), ipaddress.ip_address('::1')) or
-            any(effective_ip in net for net in TELEGRAM_IP_NETWORKS) or
-            any(effective_ip in net for net in TRUSTED_PROXY_NETWORKS)
-        )
-        if not is_allowed:
-            logger.warning(f"Webhook denied for {short_token}: IP {effective_ip}")
-            raise HTTPException(status_code=403, detail="Access denied")
 
     # Get or create bot application
     try:

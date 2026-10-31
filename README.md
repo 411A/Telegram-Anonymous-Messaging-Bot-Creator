@@ -125,9 +125,10 @@ cp .env.example .env
 | `WEBHOOK_BASE_URL` | Public HTTPS URL for webhooks | `https://bot.yourdomain.com` |
 | `TG_SECRET_TOKEN` | Secret token for webhook security | `random-secure-string` |
 | `FASTAPI_PORT` | Port for the FastAPI server | `13360` (default) |
+| `FASTAPI_BIND_ADDR` | Host bind address for the bot port | `127.0.0.1` (loopback only) |
+| `TRUSTED_PROXY_CIDRS` | Proxies allowed to forward the client IP | `172.30.0.1/32,172.30.0.2/32` |
 | `LOG_FILENAME` | Log file name | `Logs.log` |
 | `LOGGER_TIMEZONE` | Timezone for logs | `Asia/Tehran` or `UTC` |
-| `DOCKER_NETWORK_IP` | Docker network gateway (for Docker setup) | `172.30.0.1/24` |
 
 **Getting Your Bot Token:**
 1. Message [@BotFather](https://t.me/BotFather) on Telegram
@@ -242,8 +243,11 @@ credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
   - hostname: webhook.yourdomain.com
-    # Use container name and your FASTAPI_PORT
+    # Telegram only calls POST /webhook/<bot_token>.
+    path: ^/webhook/
+    # Use the Compose service name and your FASTAPI_PORT.
     service: http://hidego-tgbot:13360
+  # Reject every other host/path at the tunnel.
   - service: http_status:404
 ```
 
@@ -263,7 +267,14 @@ Update:
 ```bash
 WEBHOOK_BASE_URL=https://webhook.yourdomain.com
 FASTAPI_PORT=13360  # Must match config.yml
+FASTAPI_BIND_ADDR=127.0.0.1  # Keep the bot off the public interface
+TRUSTED_PROXY_CIDRS=172.30.0.1/32,172.30.0.2/32
 ```
+
+> **Only one public port is needed.** Telegram talks to Cloudflare on `443`.
+> `cloudflared` then reaches the bot over the private Compose network. The VPS
+> itself needs no inbound webhook port at all; keep `FASTAPI_PORT` on
+> `127.0.0.1` and deny all other inbound traffic in the firewall.
 
 ##### Step 4: Start Everything
 
@@ -277,6 +288,24 @@ cd docker/
 ./run.sh tunnel status
 ./run.sh tunnel logs
 ```
+
+**Force HTTPS-only at the edge (recommended):**
+Cloudflare's anycast edge accepts other HTTP/HTTPS ports for all customers. Reject requests to this hostname on anything but `443` with a WAF custom rule:
+
+- Expression: `(http.host eq "webhook.yourdomain.com" and not cf.edge.server_port in {443})`
+- Action: **Block**
+
+This blocks at Cloudflare's edge; your VPS still receives traffic only through the outbound tunnel.
+
+**Firewall:**
+```bash
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp
+sudo ufw enable
+```
+
+Allow outbound `7844/tcp+udp` for `cloudflared`. Do not rely on UFW to hide Docker-published ports: Docker's DNAT rules bypass it. Keep `FASTAPI_BIND_ADDR=127.0.0.1`.
 
 See detailed Docker + Cloudflare guide: [docker/cloudflared/README.md](docker/cloudflared/README.md)
 
@@ -310,6 +339,7 @@ credentials-file: /home/user/.cloudflared/YOUR_TUNNEL_ID.json
 
 ingress:
   - hostname: webhook.yourdomain.com
+    path: ^/webhook/
     service: http://localhost:13360
   - service: http_status:404
 
@@ -353,6 +383,7 @@ cd docker/
 
 # Check status
 ./run.sh status
+./run.sh security-check      # verify no public bot port
 ./run.sh watchdog-status
 
 # Tunnel management
@@ -433,8 +464,17 @@ tmux attach -t cloudflared
 ### Test Webhook
 
 ```bash
-curl https://webhook.yourdomain.com/health
+# Health is no longer public: check it from inside the container
+docker exec hidego-tgbot sh -c 'curl -fsS "http://127.0.0.1:${FASTAPI_PORT}/health"'
+
+# Confirm the host port is loopback-only and the tunnel publishes nothing
+cd docker && ./run.sh security-check
+
+# Unsigned webhook requests must be rejected (403)
+curl -i -X POST https://webhook.yourdomain.com/webhook/test
 ```
+
+`https://webhook.yourdomain.com/health` now returns `404` by design.
 
 ### Common Issues
 

@@ -120,8 +120,19 @@ TELEGRAM_IP_RANGES: Final[list[str]] = [
     '2a0a:f280::/32'
 ]
 
-# Replace with exact IPs/CIDRs of proxies you control (cloudflared container, nginx, etc.)
-DOCKER_NETWORK_IP: Final[str] = os.getenv('DOCKER_NETWORK_IP', '').strip()
+# Proxies allowed to set client-IP headers (CF-Connecting-IP / X-Forwarded-For).
+# Only these peers may influence the IP that the webhook allow-list validates.
+#
+# Defaults match docker-compose.yml:
+#   172.30.0.1 - Docker gateway (host-run cloudflared / host checks)
+#   172.30.0.2 - cloudflared container (static IP)
+#
+# TRUSTED_PROXY_CIDRS is preferred; DOCKER_NETWORK_IP is kept as a legacy alias.
+TRUSTED_PROXY_CIDRS_RAW: Final[str] = (
+    os.getenv('TRUSTED_PROXY_CIDRS')
+    or os.getenv('DOCKER_NETWORK_IP')
+    or '172.30.0.1/32,172.30.0.2/32'
+).strip()
 
 
 def _parse_trusted_proxy_cidrs(raw: str) -> list[ipaddress._BaseNetwork]:
@@ -143,7 +154,7 @@ def _parse_trusted_proxy_cidrs(raw: str) -> list[ipaddress._BaseNetwork]:
     return networks
 
 
-TRUSTED_PROXY_CIDRS: Final[list[ipaddress._BaseNetwork]] = _parse_trusted_proxy_cidrs(DOCKER_NETWORK_IP)
+TRUSTED_PROXY_CIDRS: Final[list[ipaddress._BaseNetwork]] = _parse_trusted_proxy_cidrs(TRUSTED_PROXY_CIDRS_RAW)
 
 # CORS settings
 CORS_SETTINGS: Final[dict] = {

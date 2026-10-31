@@ -35,10 +35,18 @@ services:
     env_file:
       - ../.env
     
-    #* Port mapping - use FASTAPI_PORT from .env
+    #* Port publishing - loopback only by default.
+    #* Cloudflare Tunnel reaches the bot over the Compose network by service
+    #* name, so no host port is required. This loopback mapping exists only for
+    #* a host-run cloudflared and for ./run.sh health checks.
+    #* Never use 0.0.0.0: Docker's DNAT rules bypass UFW and expose the port.
     ports:
-      - "${FASTAPI_PORT:-13360}:${FASTAPI_PORT:-13360}"
-    
+      - "${FASTAPI_BIND_ADDR:-127.0.0.1}:${FASTAPI_PORT:-13360}:${FASTAPI_PORT:-13360}"
+
+    #* Documentation only; internal DNS traffic does not need a published port.
+    expose:
+      - "${FASTAPI_PORT:-13360}"
+
     #* Volume mounts for persistent data
     volumes:
       - ../data:/app/data
@@ -47,9 +55,11 @@ services:
       - ../diff:/app/diff
       - ../.env:/app/.env:ro
     
-    #* Network configuration
+    #* Network configuration - static IP keeps allocation deterministic
+    #* (cloudflared uses .2, the bot uses .3).
     networks:
-      - hidego-network
+      hidego-network:
+        ipv4_address: 172.30.0.3
     
     #* Security options
     security_opt:
@@ -88,9 +98,11 @@ services:
       - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
       - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
     
-    #* Network configuration - must be on same network as bot
+    #* Network configuration - must be on same network as bot.
+    #* Static IP lets the app trust only this proxy, not the whole subnet.
     networks:
-      - hidego-network
+      hidego-network:
+        ipv4_address: 172.30.0.2
     
     #* Depends on bot service
     depends_on:

@@ -5,9 +5,13 @@ tunnel: YOUR_TUNNEL_ID_HERE
 credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
+  # Telegram only calls POST /webhook/<bot_token>. Restricting the path keeps
+  # /health and every future route off the public Internet.
   - hostname: webhook.yourdomain.com
-    # Connect to the bot container by service name
-    # Use the container name from docker-compose.yml
+    path: ^/webhook/
+    # Connect to the bot container by service name.
+    # Use the FASTAPI_PORT value from .env (default: 13360).
     service: http://hidego-tgbot:13360
-  # Default rule: all other requests return 404
+
+  # Default rule: reject all other hostnames and paths at the tunnel.
   - service: http_status:404

@@ -89,11 +89,10 @@ TG_SECRET_TOKEN=your-secret-token-here
 
 # Server Configuration
 FASTAPI_PORT=13360
+FASTAPI_BIND_ADDR=127.0.0.1
 
-# Docker Network Configuration (Fixed Network)
-# This MUST match the gateway IP in docker-compose.yml
-# Default: 172.30.0.1/24 (subnet: 172.30.0.0/24)
-DOCKER_NETWORK_IP=172.30.0.1/24
+# Trusted proxy addresses (gateway + cloudflared container)
+TRUSTED_PROXY_CIDRS=172.30.0.1/32,172.30.0.2/32
 
 # Logging
 LOG_FILENAME=Logs.log
@@ -137,39 +136,35 @@ This project uses a **fixed Docker network** to ensure consistent security and p
 - **Network Name**: `hidego-network`
 - **Subnet**: `172.30.0.0/24`
 - **Gateway**: `172.30.0.1`
+- **cloudflared**: `172.30.0.2` (static)
+- **hidego-tgbot**: `172.30.0.3` (static)
 - **Driver**: bridge
 
 **Why Fixed Network?**
 - Prevents IP conflicts with other Docker projects
 - Consistent security configuration
-- No need to update `DOCKER_NETWORK_IP` when creating new projects
+- Lets the app trust the exact proxy addresses instead of the whole subnet
 - Easier to configure firewall rules
 
-### DOCKER_NETWORK_IP Field
+### Trusted Proxy Configuration
 
-The `DOCKER_NETWORK_IP` field in your `.env` file specifies the trusted gateway IP for webhook security:
+Only the Cloudflare Tunnel connector may supply the client IP used by the webhook allow-list. The Compose file gives `cloudflared` the fixed address `172.30.0.2`, and the bot trusts these proxies by default:
 
 ```bash
-# This MUST match the gateway IP in docker-compose.yml
-DOCKER_NETWORK_IP=172.30.0.1/24
+# .env
+TRUSTED_PROXY_CIDRS=172.30.0.1/32,172.30.0.2/32
 ```
 
-**Purpose:**
-- Validates incoming webhook requests from Cloudflare Tunnel or other proxies
-- Ensures only requests from the Docker gateway are accepted
-- Prevents unauthorized webhook access
-- Works with the fixed network configuration in `docker-compose.yml`
+- `172.30.0.1` - Docker gateway (traffic from a host-run `cloudflared`).
+- `172.30.0.2` - `cloudflared` container (static IP in `docker-compose.yml`).
 
-**Important Notes:**
-- ⚠️ **Must match the gateway IP** defined in `docker-compose.yml` (default: `172.30.0.1`)
-- The `/24` subnet mask allows the entire `172.30.0.0/24` range
-- Changing this requires updating both `.env` and `docker-compose.yml`
+Do **not** trust the whole `/24`: any container on that network could then forge `CF-Connecting-IP` / `X-Forwarded-For`. `DOCKER_NETWORK_IP` is still read as a legacy alias when `TRUSTED_PROXY_CIDRS` is unset.
 
 **Troubleshooting:**
 If you see `403 Forbidden` errors with webhook security blocked:
-1. Check that `DOCKER_NETWORK_IP` matches the gateway in `docker-compose.yml`
-2. Verify with: `docker network inspect docker_hidego-network | grep Gateway`
-3. Update `.env` if the gateway IP is different
+1. Check that `TRUSTED_PROXY_CIDRS` matches the gateway and `cloudflared` address in `docker-compose.yml`
+2. Verify with: `docker network inspect hidego-tgbot_hidego-network | grep -A 5 "IPAM"`
+3. Update `.env` if the addresses are different
 
 **Custom Network Configuration:**
 If you need to use a different subnet, update both files:
@@ -187,14 +182,38 @@ networks:
 
 2. **Edit `.env`:**
 ```bash
-DOCKER_NETWORK_IP=172.31.0.1/24      # Must match gateway above
+TRUSTED_PROXY_CIDRS=172.31.0.1/32,172.31.0.2/32   # Gateway + cloudflared
 ```
+
+Also update the `cloudflared` (`172.31.0.2`) and bot (`172.31.0.3`) static addresses in `docker-compose.yml`.
 
 **Recommended Subnet Ranges:**
 - `172.30.0.0/24` (default) - Gateway: `172.30.0.1`
 - `172.31.0.0/24` - Gateway: `172.31.0.1`
 - `10.0.0.0/24` - Gateway: `10.0.0.1`
 - `192.168.100.0/24` - Gateway: `192.168.100.1`
+
+### Published Port
+
+`FASTAPI_PORT` is published on **loopback only**:
+
+```bash
+# .env
+FASTAPI_BIND_ADDR=127.0.0.1
+FASTAPI_PORT=13360
+```
+
+This is deliberate. A container port published as `0.0.0.0:PORT` is reachable from the Internet even when UFW reports it blocked, because Docker inserts its own DNAT rules ahead of UFW. Cloudflare Tunnel does not need a host port at all: `cloudflared` reaches `http://hidego-tgbot:13360` over the Compose network. The loopback mapping remains for a host-run `cloudflared` and for `./run.sh` health checks.
+
+Verify the exposure with:
+
+```bash
+./run.sh security-check
+```
+
+Expected output: `Bot port ... is loopback-only` and `cloudflared publishes no host ports`.
+
+**If you use an orange-cloud DNS record instead of a tunnel:** Cloudflare proxies only its [supported HTTP/HTTPS ports](https://developers.cloudflare.com/fundamentals/reference/network-ports/) and connects to the origin on the same port. Publish only `443` (with TLS termination) and allow only [Cloudflare IP ranges](https://www.cloudflare.com/ips/) to reach it. Use the `DOCKER-USER` iptables chain, not UFW, because Docker-published ports bypass UFW. A Cloudflare Tunnel avoids all of this: no inbound port and no origin IP allow-list.
 
 ### 🔍 Verifying Your Network Configuration
 
@@ -204,48 +223,63 @@ DOCKER_NETWORK_IP=172.31.0.1/24      # Must match gateway above
 docker network ls
 
 # Inspect the hidego network
-docker network inspect docker_hidego-network
+docker network inspect hidego-tgbot_hidego-network
 
 # Quick gateway check
-docker network inspect docker_hidego-network | grep -A 5 "IPAM"
+docker network inspect hidego-tgbot_hidego-network | grep -A 5 "IPAM"
 ```
 
 **Verify Settings Match:**
 ```bash
-# 1. Check docker-compose.yml gateway
-grep -A 5 "hidego-network" docker-compose.yml
+# 1. Check docker-compose.yml gateway and cloudflared address
+grep -A 8 "hidego-network" docker/docker-compose.yml
 
-# 2. Check .env setting
-grep "DOCKER_NETWORK_IP" ../.env
+# 2. Check .env settings
+grep -E "TRUSTED_PROXY_CIDRS|FASTAPI_BIND_ADDR" .env
 
 # 3. These should match!
 ```
 
 ## 🔒 Network Security
 
-The fixed Docker network configuration provides several security benefits:
+The fixed Docker network and loopback-only port keep the webhook path on one controlled channel:
 
 **Security Features:**
-- Webhook validation against known Docker gateway IP
-- Protection from unauthorized webhook sources
-- Consistent security rules across deployments
-- Easy firewall configuration with fixed IPs
+- `FASTAPI_PORT` listens on `127.0.0.1` only; there is no public origin port
+- `cloudflared` connects outbound to Cloudflare on `7844/tcp+udp`; no ingress port
+- Tunnel ingress matches only `/webhook/...`; all other paths return 404
+- Webhook clients are validated against Telegram's official IP ranges
+- Only the Docker gateway and the `cloudflared` container may forward a client IP
+- Secret token (`TG_SECRET_TOKEN`) is checked in constant time
 
 **Trusted Sources:**
 The bot accepts webhooks from:
 1. **Telegram's official IP ranges** (automatically validated)
-2. **Docker gateway IP** (configured in `.env`)
-3. **Localhost** (`127.0.0.1`) for testing
+2. **Localhost** (`127.0.0.1`) for testing
+
+The proxy itself is not a webhook source; it only supplies the real client IP.
+
+**Firewall:**
+With Cloudflare Tunnel the VPS needs **no inbound webhook port**. Close all inbound traffic except SSH (and your management ports) at both the cloud provider's firewall/security group and the OS firewall:
+
+```bash
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp
+sudo ufw enable
+```
+
+Keep outbound `7844/tcp` and `7844/udp` open for `cloudflared`. Do not open `80`/`443` for the tunnel.
+
+> ⚠️ UFW does **not** filter Docker-published ports. Docker writes DNAT rules that bypass UFW's INPUT chain. This is why the Compose file binds the port to `127.0.0.1` instead of relying on the firewall alone.
 
 **Security Best Practices:**
-- Never expose the bot port directly to the internet
-- Always use a reverse proxy (Cloudflare Tunnel, nginx)
+- Never set `FASTAPI_BIND_ADDR=0.0.0.0`
+- Always use Cloudflare Tunnel (or a local reverse proxy)
 - Keep `TG_SECRET_TOKEN` secure and unique
 - Regularly update the Docker images
 - Monitor logs for suspicious activity
-- **Isolated bridge network** for container communication
-- **Webhook IP validation** using Telegram's official IP ranges
-- **Proxy trust configuration** for reverse proxy setups
+- Run `./run.sh security-check` after changing ports/network settings
 
 ## 🔧 Manual Setup
 
@@ -276,7 +310,7 @@ docker compose --env-file ../.env run --rm hidego-tgbot
 docker compose --env-file ../.env up -d
 ```
 
-Important: direct `docker compose` commands must include `--env-file ../.env` from the `docker/` directory. Compose uses that file for `${FASTAPI_PORT}` interpolation in ports and healthchecks; `env_file:` only passes variables into the container.
+Important: direct `docker compose` commands must include `--env-file ../.env` from the `docker/` directory. Compose uses that file for `${FASTAPI_PORT}` and `${FASTAPI_BIND_ADDR}` interpolation in ports and healthchecks; `env_file:` only passes variables into the container.
 
 This project also sets the Compose project name to `hidego-tgbot`. Do not remove it. Without a unique project name, Compose defaults to the folder name, so multiple bots deployed from folders named `docker` can accidentally stop each other on `down`, cleanup, or rebuild flows. If you copy this Docker setup for another bot, change `name:`, `COMPOSE_PROJECT_NAME`, and container names to unique values.
 
@@ -396,7 +430,7 @@ Check Docker network:
 docker network ls
 
 # Inspect network
-docker network inspect docker_hidego-network
+docker network inspect hidego-tgbot_hidego-network
 
 # Test connectivity
 docker exec hidego-tgbot ping 8.8.8.8
@@ -499,7 +533,7 @@ cp -r logs_backup/* logs/
 4. **Configure log rotation** to prevent disk space issues
 5. **Set up automated backups**
 6. **Use a dedicated server** or VPS
-7. **Configure firewall** to allow only necessary ports
+7. **Configure the firewall** to deny all inbound traffic except SSH; allow `cloudflared` egress on `7844/tcp+udp`
 
 ### Automatic Recovery Watchdog
 
@@ -563,21 +597,21 @@ healthcheck:
 
 ### 403 Forbidden Webhook Security Blocked
 
-**Problem**: You see error `403 Forbidden webhook security blocked: 172.X.X.X` after creating other Docker projects on the same host.
+**Problem**: You see error `403 Forbidden webhook security blocked: 172.X.X.X`.
 
-**Cause**: Docker assigns sequential network IP ranges (172.17.0.0/16, 172.18.0.0/16, etc.) to new projects. When you create another Docker project, your bot's network IP changes, but `DOCKER_NETWORK_IP` in `.env` still has the old value.
+**Cause**: The request reached the bot from an address that is not in `TRUSTED_PROXY_CIDRS`, or the trusted proxy did not send `CF-Connecting-IP` / `X-Forwarded-For`.
 
 **Solution**:
-1. Use the fixed network configuration (already implemented in this project)
-2. Verify your network IP matches `.env`:
+1. Confirm the bot's port is reached through `cloudflared`, not directly
+2. Verify the proxy addresses match `.env`:
    ```bash
-   # Check current network IP
-   docker network inspect docker_hidego-network | grep Subnet
-   
-   # Should match DOCKER_NETWORK_IP in .env
-   grep DOCKER_NETWORK_IP ../.env
+   # Check gateway and cloudflared address
+   docker network inspect hidego-tgbot_hidego-network | grep -A 8 "IPAM"
+
+   # Should match TRUSTED_PROXY_CIDRS in .env
+   grep TRUSTED_PROXY_CIDRS ../.env
    ```
-3. If mismatched, restart containers to apply fixed network:
+3. If you changed the subnet, update both `.env` and the `cloudflared` static IP, then recreate:
    ```bash
    cd docker
    docker compose --env-file ../.env down
@@ -607,7 +641,7 @@ healthcheck:
   TELEGRAM_CONNECTION_TIMEOUT=20
   TELEGRAM_READ_TIMEOUT=60
   ```
-- Check Docker network connectivity: `docker network inspect docker_hidego-network`
+- Check Docker network connectivity: `docker network inspect hidego-tgbot_hidego-network`
 
 ### Database Permission Issues
 
@@ -624,10 +658,10 @@ healthcheck:
 
 ### Port Already in Use
 
-**Problem**: `Bind for 0.0.0.0:13360 failed: port is already allocated`
+**Problem**: `Bind for 127.0.0.1:13360 failed: port is already allocated`
 
 **Solutions**:
-- Change `FASTAPI_PORT` in `.env` to an available port
+- Change `FASTAPI_PORT` in `.env` to an available port (and update `cloudflared/config.yml`)
 - Check what's using the port: `sudo lsof -i :13360`
 - Stop conflicting service or use different port
 

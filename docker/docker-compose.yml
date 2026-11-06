@@ -43,6 +43,13 @@ services:
     env_file:
       - ../.env
 
+    #* Explicit upstream DNS: the embedded Docker DNS behind a
+    #* systemd-resolved stub measured 2s+ per api.telegram.org lookup,
+    #* eating the Bot API connect budget on slow/filtered egress.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
     #* Port publishing - loopback only by default.
     #* Cloudflare Tunnel reaches the bot over the Compose network by service
     #* name, so no host port is required. This loopback mapping exists only for

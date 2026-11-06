@@ -28,6 +28,8 @@ services:
     environment:
       #* Lean server tuning; operator .env value wins when set.
       UVICORN_EXTRA_ARGS: ${UVICORN_EXTRA_ARGS:---workers 1 --loop uvloop --http httptools --timeout-keep-alive 5}
+      #* Small Bot API pool for 1 vCPU: upstream default is 256 per cached bot.
+      TELEGRAM_POOL_SIZE: ${TELEGRAM_POOL_SIZE:-32}
 
   cloudflared:
     restart: unless-stopped

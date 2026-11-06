@@ -43,6 +43,7 @@ from telegram.constants import ParseMode
 from telegram.error import InvalidToken, NetworkError, TimedOut
 from telegram.ext import (
     Application,
+    ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -69,8 +70,11 @@ from configs.settings import (
     MAX_IN_MEMORY_ACTIVE_BOTS,
     TELEGRAM_CONNECTION_TIMEOUT,
     TELEGRAM_IP_RANGES,
+    TELEGRAM_POOL_SIZE,
+    TELEGRAM_PROXY,
     TELEGRAM_READ_TIMEOUT,
     TELEGRAM_REQUEST_TIMEOUT,
+    TELEGRAM_WRITE_TIMEOUT,
     TG_SECRET_TOKEN,
     TRUSTED_PROXY_CIDRS,
     WEBHOOK_BASE_URL,
@@ -186,6 +190,55 @@ async def _retry_async_call(
             logger.error(f"Failed to {operation} for {short_token}: {type(e).__name__}")
             raise
     raise RuntimeError("unreachable")  # pragma: no cover - satisfies type checkers
+
+
+def _telegram_builder(token: str) -> ApplicationBuilder:
+    """Build a bot Application with shared egress tuning.
+
+    Bounded pool, slow-egress timeouts, and optional proxy (for VPS providers
+    that reset/throttle api.telegram.org). Keeps both builder sites identical.
+    """
+    builder = (
+        Application.builder()
+        .token(token)
+        .concurrent_updates(10)
+        .connection_pool_size(TELEGRAM_POOL_SIZE)
+        .pool_timeout(TELEGRAM_REQUEST_TIMEOUT)
+        .connect_timeout(TELEGRAM_CONNECTION_TIMEOUT)
+        .read_timeout(TELEGRAM_READ_TIMEOUT)
+        .write_timeout(TELEGRAM_WRITE_TIMEOUT)
+    )
+    if TELEGRAM_PROXY:
+        builder = builder.proxy(TELEGRAM_PROXY).get_updates_proxy(TELEGRAM_PROXY)
+    return builder
+
+
+async def _on_update_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Concise update-error logging.
+
+    Transient Telegram egress timeouts are warnings (one line); only unexpected
+    errors keep the full traceback. Without this, PTB logs "No error handlers
+    are registered" plus a full traceback per failed reply.
+    """
+    err = context.error
+    if isinstance(err, TimedOut | NetworkError):
+        logger.warning(f"Transient Telegram egress error ({type(err).__name__}); user reply likely lost.")
+        return
+    logger.exception(f"Update handler failed:\n{err}")
+
+
+async def _reply_text_with_retry(message: Message, *args: Any, **kwargs: Any) -> Any:
+    """Reply once, retrying a single time on Telegram egress timeouts.
+
+    Measured VPS egress to api.telegram.org is slow (~2s IPv4) with periodic
+    resets; one retry recovers most transient ConnectTimeouts.
+    """
+    try:
+        return await message.reply_text(*args, **kwargs)
+    except TimedOut:
+        logger.warning("Reply timed out, retrying once...")
+        await asyncio.sleep(2)
+        return await message.reply_text(*args, **kwargs)
 
 # Global LRU cache to store active user-created bot applications.
 active_bots = ApplicationLRUCache(maxsize=MAX_IN_MEMORY_ACTIVE_BOTS, on_evicted=cleanup_application)
@@ -321,7 +374,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if ctx is None:
         return
     message, user_lang = ctx.message, ctx.user_lang
-    await message.reply_text(get_response(ResponseKey.START_COMMAND, user_lang, BOT_CREATOR_USERNAME=MAIN_BOT_USERNAME), parse_mode=ParseMode.HTML)
+    await _reply_text_with_retry(message, get_response(ResponseKey.START_COMMAND, user_lang, BOT_CREATOR_USERNAME=MAIN_BOT_USERNAME), parse_mode=ParseMode.HTML)
 
 async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     ctx = _extract_update_context(update, "privacy")
@@ -501,16 +554,10 @@ async def create_and_configure_bot(token: str) -> Application:
 
     try:
         application = (
-            Application.builder()
-            .token(token)
-            .concurrent_updates(10)
-            .connection_pool_size(256)
-            .pool_timeout(TELEGRAM_REQUEST_TIMEOUT)
-            .connect_timeout(TELEGRAM_CONNECTION_TIMEOUT)
-            .read_timeout(TELEGRAM_READ_TIMEOUT)
-            .write_timeout(TELEGRAM_REQUEST_TIMEOUT)
+            _telegram_builder(token)
             .build()
         )
+        application.add_error_handler(_on_update_error)
         # Get bot instance
         new_bot = application.bot
 
@@ -722,15 +769,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Initialize main bot with proper handlers
     main_app = (
-        Application.builder()
-        .token(MAIN_BOT_TOKEN)
-        .connection_pool_size(256)
-        .pool_timeout(TELEGRAM_REQUEST_TIMEOUT)
-        .connect_timeout(TELEGRAM_CONNECTION_TIMEOUT)
-        .read_timeout(TELEGRAM_READ_TIMEOUT)
-        .write_timeout(TELEGRAM_REQUEST_TIMEOUT)
+        _telegram_builder(MAIN_BOT_TOKEN)
         .build()
     )
+    main_app.add_error_handler(_on_update_error)
     main_app.add_handler(CommandHandler('start', main_start))
     main_app.add_handler(CommandHandler('register', register_bot))
     main_app.add_handler(CommandHandler('revoke', revoke_bot))

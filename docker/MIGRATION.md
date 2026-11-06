@@ -233,6 +233,7 @@ running against the same tunnel.
 
 | Symptom | Check |
 |---------|-------|
+| `telegram.error.TimedOut` on reply (`ConnectTimeout` to `api.telegram.org`) but webhooks return `200` | Ingress is fine; outbound egress is slow/filtered. From VPS: `time curl -4 -o /dev/null -w "connect=%{time_connect} total=%{time_total}\n" https://api.telegram.org`. If default `curl` fails with `Connection reset` but `-4` works, IPv6 is being reset — the bot container now uses explicit `1.1.1.1/8.8.8.8` DNS (`docker/docker-compose.yml`) to avoid the 2s+ stub-resolver delay. If both are slow/reset, set `TELEGRAM_PROXY=` (or `HTTPS_PROXY=`) in `.env` and restart. Lean mode already caps the Bot API pool to 32 (`TELEGRAM_POOL_SIZE`). |
 | `error code: 1033` | `cloudflared` not connected, or two connectors where one is dead. `./run.sh tunnel status`, `docker logs hidego-cloudflared` |
 | `502` from Cloudflare | Tunnel is up but `service:` port/host is wrong, or bot container is down |
 | `403` on every webhook | `TG_SECRET_TOKEN` mismatch, or `TRUSTED_PROXY_CIDRS` missing `172.30.0.2/32` |

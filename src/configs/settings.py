@@ -43,10 +43,17 @@ MAX_IN_MEMORY_ACTIVE_BOTS: Final = 100
 # 20 Minutes answer time
 ADMIN_REPLY_TIMEOUT: Final = 60 * 20
 
-# Network timeout settings (in seconds)
-TELEGRAM_REQUEST_TIMEOUT: Final = 30
-TELEGRAM_CONNECTION_TIMEOUT: Final = 10
-TELEGRAM_READ_TIMEOUT: Final = 30
+# Network timeout settings (in seconds, overridable for slow/filtered egress)
+TELEGRAM_REQUEST_TIMEOUT: Final[int] = int(os.getenv('TELEGRAM_REQUEST_TIMEOUT') or 30)
+TELEGRAM_CONNECTION_TIMEOUT: Final[int] = int(os.getenv('TELEGRAM_CONNECTION_TIMEOUT') or 10)
+TELEGRAM_READ_TIMEOUT: Final[int] = int(os.getenv('TELEGRAM_READ_TIMEOUT') or 30)
+TELEGRAM_WRITE_TIMEOUT: Final[int] = int(os.getenv('TELEGRAM_WRITE_TIMEOUT') or 30)
+# Max pooled Bot API connections per cached bot Application (upstream default 256;
+# lower on low-end hosts, e.g. 32 via LEAN_MODE, to bound sockets/CPU on 1 vCPU).
+TELEGRAM_POOL_SIZE: Final[int] = int(os.getenv('TELEGRAM_POOL_SIZE') or 256)
+# Optional proxy URL for Bot API traffic (https/socks5), e.g. when the VPS
+# provider resets/throttles api.telegram.org. Plain env HTTPS_PROXY also works.
+TELEGRAM_PROXY: Final = os.getenv('TELEGRAM_PROXY') or None
 
 # Webhook deduplication settings
 # Maximum number of processed updates to cache

@@ -171,9 +171,11 @@ recreate it only if you change the hostname.
 
 ```bash
 cd docker
-./run.sh start --lean
+./run.sh pull --lean
 ```
 
+This pulls the CI-built image and starts it without compiling on the new VPS.
+If you prefer to build from the checkout, use `./run.sh start -b --lean`.
 If this is a manual copy rather than a `git clone` and it lost file modes,
 run `chmod +x run.sh` once.
 

@@ -48,7 +48,10 @@ class GitHubChecker:
 
         # Initialize ignore lists, including common defaults
         default_ignore_files = [".env", DIFFERENCES_FILE_NAME]
-        default_ignore_folders = [".venv", "__pycache__", ".git"]
+        default_ignore_folders = [
+            ".venv", "__pycache__", ".git",
+            ".ruff_cache", ".mypy_cache", ".pytest_cache",
+        ]
 
         # Add Docker-specific ignores when running in container
         if os.environ.get("DOCKER_ENV"):
@@ -60,7 +63,8 @@ class GitHubChecker:
             # `.dockerignore` deliberately keeps src/assets out of the image
             # (the 33MB tutorial video is served from Telegram/URL), so the
             # checker must not treat it as a missing source file.
-            default_ignore_folders.extend(["docker", "src/assets"])
+            # `.github` and `tests` are repo-only too; the image never copies them.
+            default_ignore_folders.extend(["docker", "src/assets", ".github", "tests"])
 
             # Runtime files that exist in container but not in repo
             default_ignore_files.extend([

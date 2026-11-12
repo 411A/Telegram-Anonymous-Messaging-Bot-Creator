@@ -34,15 +34,22 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # ---------------------------------------------------------------- runtime ---
 FROM ${PYTHON_BASE} AS runtime
 
+# Filled by the publish workflow with the exact commit built into the image.
+# Empty for local builds, which makes /safetycheck fall back to main.
+ARG GIT_COMMIT=""
+
 # OCI + project labels: used by run.sh prune to scope cleanup to THIS project.
 LABEL org.opencontainers.image.title="hidego-tgbot" \
       org.opencontainers.image.description="HiddenEgo Telegram Anonymous Messaging Bot" \
+      org.opencontainers.image.source="https://github.com/411A/Telegram-Anonymous-Messaging-Bot-Creator" \
+      org.opencontainers.image.revision="${GIT_COMMIT}" \
       org.hidego.project="hidego-tgbot"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    GIT_COMMIT=${GIT_COMMIT} \
     DOCKER_ENV=1
 
 WORKDIR /app

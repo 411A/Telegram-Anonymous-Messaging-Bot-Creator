@@ -145,9 +145,10 @@ up_stack() {
     local build_mode="${1:-normal}"
     local args=(up -d --remove-orphans)
 
-    if [ "$build_mode" = "build" ]; then
-        args+=(--build)
-    fi
+    case "$build_mode" in
+        build) args+=(--build) ;;
+        pull) args+=(--no-build) ;;
+    esac
 
     warn_tunnel_partial
     remove_legacy_named_containers
@@ -314,6 +315,53 @@ recover_stack() {
     fi
 
     host_health_check
+}
+
+pull_stack() {
+    ensure_docker
+    ensure_directories
+    rm -f "$DISABLE_FILE"
+
+    local requested_tag="${1:-}"
+    local repo tag image
+    repo="$(read_env_value BOT_IMAGE_REPO)"
+    [ -n "$repo" ] || repo="ghcr.io/411a/telegram-anonymous-messaging-bot-creator"
+
+    tag="$requested_tag"
+    [ -n "$tag" ] || tag="$(read_env_value IMAGE_TAG)"
+    [ -n "$tag" ] || tag="latest"
+    image="${repo}:${tag}"
+
+    log_info "Pulling prebuilt image: $image"
+    if ! docker pull "$image"; then
+        log_error "Could not pull $image."
+        log_error "If the GHCR package is private, run: docker login ghcr.io"
+        return 1
+    fi
+
+    # Compose keeps using the canonical local tag, so start/recover/stop paths
+    # remain unchanged and no local build is triggered.
+    docker tag "$image" hidego-tgbot/bot:latest
+
+    # The tunnel wrapper is tiny; build it once if this host never had it.
+    if tunnel_configured && ! docker image inspect hidego-tgbot/cloudflared:latest >/dev/null 2>&1; then
+        log_info "Building the small cloudflared wrapper once."
+        docker_compose build cloudflared
+    fi
+
+    if ! infisical_configured; then
+        log_warning "Manual password mode: starting interactively with the pulled image."
+        start_stack
+        return
+    fi
+
+    if [ "${LEAN_FLAG:-false}" = true ]; then
+        log_info "Lean mode enabled for this run (RAM/CPU caps + lean uvicorn)."
+    fi
+
+    up_stack pull
+    log_success "Started from prebuilt image $image."
+    docker_compose ps
 }
 
 stop_stack() {
@@ -663,6 +711,7 @@ Usage: ./run.sh [-b] [command]
 
 Commands:
   start                  Start the bot and enable watchdog recovery
+  pull [tag]             Pull the prebuilt GHCR image and start without building
   recover                Reconcile/recreate the stack; intended for systemd watchdog
   stop                   Stop the stack and disable watchdog recovery
   restart                Restart via stop + start
@@ -715,6 +764,9 @@ set -- "${NORMALIZED_ARGS[@]:-start}"
 case "$COMMAND" in
     start|"")
         start_stack
+        ;;
+    pull|update)
+        pull_stack "${2:-}"
         ;;
     recover)
         recover_stack

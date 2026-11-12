@@ -6,6 +6,7 @@ at import time (fail-fast for container restarts).
 """
 import ipaddress
 import os
+import re
 from pathlib import Path
 from typing import Final, Literal, TypeAlias
 
@@ -181,6 +182,15 @@ FASTAPI_PORT: Final[int] = int(os.getenv('FASTAPI_PORT') or 13360)
 LOG_FILENAME: Final[Path] = BASE_DIR / LOG_FOLDER_NAME / (os.getenv('LOG_FILENAME') or 'Logs.log')
 LOGGER_TIMEZONE: Final[str] = os.getenv('LOGGER_TIMEZONE') or 'UTC'
 DEVELOPER_CONTACT_URL: Final[str] = os.getenv('DEVELOPER_CONTACT_URL') or 'https://t.me/ContactHydraBot'
+
+# Commit SHA baked into CI-built images (empty for local builds). /safetycheck
+# compares against this exact commit, so a published image does not look
+# different merely because main advanced after the image was built. The regex
+# rejects arbitrary refs and keeps the value safe to use in a GitHub URL.
+_GIT_COMMIT_RAW: Final[str] = (os.getenv('GIT_COMMIT') or '').strip()
+GIT_COMMIT: Final[str | None] = (
+    _GIT_COMMIT_RAW if re.fullmatch(r'[0-9a-f]{7,40}', _GIT_COMMIT_RAW) else None
+)
 
 # Validate required environment variables at startup
 _REQUIRED_ENV_VARS: Final = {

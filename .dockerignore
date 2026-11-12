@@ -4,6 +4,7 @@
 # Version control / mirrors
 .git
 .gitignore
+.github/
 repo-mirror.git/
 
 # Local virtualenvs (host-only; container builds its own env)
@@ -18,6 +19,7 @@ env/
 **/*.pyo
 **/*.pyd
 .mypy_cache/
+.ruff_cache/
 .pytest_cache/
 .coverage*
 

@@ -1,0 +1,109 @@
+name: Publish container image
+
+# Build once on GitHub's runners, then let the VPS pull the finished image.
+# No pip/build toolchain runs on the small VPS.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/411a/telegram-anonymous-messaging-bot-creator
+
+jobs:
+  quality:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install quality tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt \
+            ruff==0.14.10 \
+            mypy==1.19.0 \
+            types-aiofiles==25.1.0.20251011
+      - name: Ruff
+        run: python -m ruff check .
+      - name: Mypy
+        run: python -m mypy
+
+  build:
+    name: Build and push
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=HiddenEgo Telegram Bot
+            org.opencontainers.image.description=Telegram anonymous messaging bot creator
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          # The target VPS is amd64. Add linux/arm64 here only if needed; it
+          # makes the CI build slower through QEMU.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Build provenance + SBOM attestations are stored alongside the
+          # image. Inspect them with:
+          #   docker buildx imagetools inspect <image>@<digest>
+          provenance: mode=max
+          sbom: true
+
+      - name: Published digest
+        run: |
+          echo "### Published image" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+# Optional hardening: add keyless cosign signing and a Trivy scan after the
+# build. Both are intentionally left out of the default workflow so the image
+# pipeline has no extra third-party actions or failure modes.

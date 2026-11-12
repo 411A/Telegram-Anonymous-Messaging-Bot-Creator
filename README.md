@@ -75,11 +75,16 @@ cd Telegram-Anonymous-Messaging-Bot-Creator
 cp .env.example .env
 nano .env  # Edit with your bot token and settings
 
-# 3. Start the bot
+# 3. Start the bot from the prebuilt image (no local build)
 cd docker/
-./run.sh start
+./run.sh pull
 ```
 
+> `./run.sh pull` downloads the CI-built image from GitHub Container Registry.
+> If the package is still private, run `docker login ghcr.io` first or make the
+> package public in its GitHub package settings. To build locally instead, use
+> `./run.sh start -b`.
+>
 > `run.sh` is stored executable in Git. If you copied the project from
 > Windows without preserving file modes, run `chmod +x docker/run.sh` once;
 > normal `git clone` and `git pull` keep the bit.
@@ -365,13 +370,16 @@ python bot_creator.py
 ```bash
 cd docker/
 
-# Start bot (and tunnel if configured)
+# Pull the prebuilt image and start (no build on the VPS)
+./run.sh pull
+
+# Start bot (and tunnel if configured) from the existing local image
 ./run.sh start
 
 # Install host watchdog recovery after Infisical is configured
 ./run.sh install-watchdog
 
-# Start with rebuild
+# Start with a local rebuild
 ./run.sh start -b
 
 # Reconcile/recreate containers immediately

@@ -64,8 +64,13 @@ nano .env  # or your preferred editor
 ### 3. Start with Helper Script
 ```bash
 cd docker/
-./run.sh start
+./run.sh pull
 ```
+
+`./run.sh pull` downloads the CI-built image from GitHub Container Registry and
+starts it without running a build on the VPS. If the package is private,
+`docker login ghcr.io` first. To build locally instead, use
+`./run.sh start -b`.
 
 `run.sh` is stored executable in Git; if a manual copy dropped the bit,
 `chmod +x run.sh` once.
@@ -387,6 +392,53 @@ docker compose --env-file ../.env -f docker-compose.yml -f docker-compose.lean.y
 | ≥2 GB | default `512m` | default `128m` | default | Optional |
 
 These are caps, not reservations; the bot usually idles well below them. If the container is OOM-killed (`docker inspect -f '{{.State.OOMKilled}}' hidego-tgbot`), lower `BOT_MEM_LIMIT` only after checking actual usage with `docker stats`.
+
+### Prebuilt Images (recommended on a small VPS)
+
+The `Publish container image` GitHub Actions workflow builds the image on
+GitHub's runners and pushes it to GitHub Container Registry (GHCR). The VPS
+then pulls the finished image — no `pip install`, compiler, or build step runs
+on the 1 vCPU box.
+
+```bash
+cd docker
+
+./run.sh pull                     # latest image built from main
+./run.sh pull sha-583442a         # pin an exact build
+```
+
+`./run.sh pull` downloads the image, re-tags it as the local
+`hidego-tgbot/bot:latest`, and starts the stack with `--no-build`. Use
+`BOT_IMAGE_REPO` / `IMAGE_TAG` in `.env` to change the registry or default tag.
+
+**First pull / private package:** GHCR packages are private by default even
+for public repositories. Either make the package public in its GitHub package
+settings, or authenticate once on the VPS:
+
+```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+```
+
+The token only needs `read:packages`.
+
+**Why this is safer than building on the VPS:**
+
+- The image is built from a clean GitHub runner, not from whatever happens to
+  be in the VPS working tree.
+- The workflow runs `ruff check .` and `mypy` before publishing, so a broken
+  or untyped commit never becomes an image.
+- Every build gets a per-commit `sha-<commit>` tag plus OCI labels, SBOM, and
+  build provenance. Pin that tag — or the digest from the Actions summary —
+  for reproducible deployments instead of tracking `latest`.
+- `/safetycheck` compares the container against the exact `GIT_COMMIT` baked
+  into the image, so a published image is not reported as modified just
+  because `main` advanced after it was built.
+
+A prebuilt image is not automatically more secure: you are trusting GitHub
+Actions and GHCR to build and store it. The safeguards are the quality gate,
+immutable tags, provenance/SBOM, and least-privilege workflow permissions. The
+local build path (`./run.sh start -b`) remains available if you prefer to
+build from your own checkout.
 
 **Building on a very low-end VPS:** the image build runs `pip install` for the full dependency set and can OOM below ~1 GB RAM. Either add swap first:
 

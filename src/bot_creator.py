@@ -66,6 +66,7 @@ from configs.settings import (
     DEVELOPER_GITHUB_REPOSITORY_NAME,
     DEVELOPER_GITHUB_USERNAME,
     FASTAPI_PORT,
+    GIT_COMMIT,
     GITHUB_CHECKER_FILENAME,
     MAIN_BOT_TOKEN,
     MAX_IN_MEMORY_ACTIVE_BOTS,
@@ -395,7 +396,10 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     checker = GitHubChecker(
         repo_owner=DEVELOPER_GITHUB_USERNAME,
         repo_name=DEVELOPER_GITHUB_REPOSITORY_NAME,
-        branch='main',
+        # CI-built images carry the exact commit they were built from; compare
+        # against that instead of main so a published image doesn't look stale
+        # merely because main advanced. Local builds fall back to main.
+        branch=GIT_COMMIT or 'main',
     )
     try:
         # Get current local hash to detect changes

@@ -39,6 +39,7 @@ from telegram import (
     Message,
     Update,
     User,
+    WebhookInfo,
 )
 from telegram.constants import ParseMode
 from telegram.error import InvalidToken, NetworkError, TimedOut
@@ -525,6 +526,23 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             except Exception as send_error:
                 logger.error(f"Failed to send error message:\n{send_error}")
 
+def _webhook_matches(
+    webhook_info: WebhookInfo | None,
+    url: str,
+    allowed_updates: list[str],
+) -> bool:
+    """Return True only when the webhook URL and update types are correct.
+
+    Comparing the URL alone leaves stale ``allowed_updates`` in place forever:
+    for example, a main bot subscribed only to ``message`` would never receive
+    the retry-registration callback.
+    """
+    if not webhook_info or not webhook_info.url or webhook_info.url != url:
+        return False
+    current = webhook_info.allowed_updates
+    return current is not None and sorted(current) == sorted(allowed_updates)
+
+
 async def _apply_webhook(bot: Bot, token: str, allowed_updates: list[str]) -> None:
     """Delete any existing webhook and set the expected one for a bot token."""
     await bot.delete_webhook()
@@ -533,6 +551,21 @@ async def _apply_webhook(bot: Bot, token: str, allowed_updates: list[str]) -> No
         allowed_updates=allowed_updates,
         secret_token=TG_SECRET_TOKEN,
     )
+
+
+def _webhook_needs_update(
+    webhook_info: Any | None,
+    webhook_url: str,
+    desired_updates: list[str],
+) -> bool:
+    """Return True when the webhook URL or allowed update set must be refreshed."""
+    if not webhook_info or not webhook_info.url or webhook_info.url != webhook_url:
+        return True
+    current_updates = getattr(webhook_info, "allowed_updates", None)
+    if current_updates is None:
+        # None means unrestricted: Telegram already delivers every update type.
+        return False
+    return not set(desired_updates).issubset(current_updates)
 
 
 async def configure_bot_interface(bot: Bot, bot_username: str) -> bool:
@@ -579,8 +612,9 @@ async def create_and_configure_bot(token: str) -> Application:
         raise
 
     try:
-        if not webhook_info or not webhook_info.url or webhook_info.url != webhook_url:
-            await _apply_webhook(new_bot, token, allowed_updates=['message', 'callback_query'])
+        desired_updates = ['message', 'callback_query']
+        if _webhook_needs_update(webhook_info, webhook_url, desired_updates):
+            await _apply_webhook(new_bot, token, allowed_updates=desired_updates)
             # Configure bot settings immediately after creation
             if bot_username:
                 await configure_bot_interface(new_bot, bot_username)
@@ -794,11 +828,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         # Set webhook for main bot
         webhook_url = f'{WEBHOOK_BASE_URL}/webhook/{MAIN_BOT_TOKEN}'
+        desired_updates = ['message', 'callback_query']
         webhook_info = await main_app.bot.get_webhook_info()
-        if not webhook_info.url or webhook_info.url != webhook_url:
-            await _apply_webhook(main_app.bot, MAIN_BOT_TOKEN, allowed_updates=['message'])
-        else:
+        if not _webhook_needs_update(webhook_info, webhook_url, desired_updates):
             logger.info('Main bot webhook already correctly configured')
+        else:
+            await _apply_webhook(main_app.bot, MAIN_BOT_TOKEN, allowed_updates=desired_updates)
 
         # Initialize and start the main bot
         await main_app.initialize()
@@ -928,14 +963,24 @@ async def webhook_handler(bot_token: str, request: Request) -> dict[str, str]:
             return {"status": "ok", "message": "duplicate"}
         PROCESSED_UPDATES[update_key] = True
 
-    # Get or create bot application
-    try:
-        application = await get_application(bot_token)
-    except Exception as e:
-        logger.error(f"Bot creation failed for {short_token}: {type(e).__name__}")
-        if update_id:
-            PROCESSED_UPDATES.pop(f"{short_token}:{update_id}", None)
-        return {"status": "error", "message": "Bot creation failed"}
+    # Get the right Application: the main bot has its own command set
+    # (/register, /revoke, /about, ...). Never route its updates through the
+    # lazily-created child-bot handler set, or those commands silently vanish.
+    if bot_token == MAIN_BOT_TOKEN:
+        if main_bot_application is None or not getattr(main_bot_application, "running", False):
+            logger.error(f"Main bot application is not ready; rejecting update for {short_token}")
+            if update_id:
+                PROCESSED_UPDATES.pop(f"{short_token}:{update_id}", None)
+            return {"status": "error", "message": "Main bot not ready"}
+        application = main_bot_application
+    else:
+        try:
+            application = await get_application(bot_token)
+        except Exception as e:
+            logger.error(f"Bot creation failed for {short_token}: {type(e).__name__}")
+            if update_id:
+                PROCESSED_UPDATES.pop(f"{short_token}:{update_id}", None)
+            return {"status": "error", "message": "Bot creation failed"}
 
     # Queue update for processing
     update_obj = Update.de_json(update_data, application.bot)

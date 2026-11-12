@@ -71,9 +71,11 @@ def generate_anonymous_id(user_id: int, user_fname: str | None = None, with_hist
     # Remove non-alphanumeric characters and ensure length
     anon_id = ''.join(filter(str.isalnum, encoded))[:10]
 
-    # Ensure the first character is a letter
+    # Ensure the first character is a letter. Use the hash itself so the
+    # with-history ID stays stable for the same user; a random choice here
+    # would silently change the anonymous ID between messages.
     if not anon_id[0].isalpha():
-        anon_id = random.choice(string.ascii_letters) + anon_id[1:]
+        anon_id = string.ascii_letters[hash_obj[0] % len(string.ascii_letters)] + anon_id[1:]
 
     if with_history:
         return f"#{anon_id}"

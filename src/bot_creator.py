@@ -28,8 +28,13 @@ import uvicorn
 
 #! Import cachetools for LRUCache and prepare a per-bot lock dict.
 from cachetools import LRUCache, TTLCache
-from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.middleware.cors import CORSMiddleware
+from starlette import status
+from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
+from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 from telegram import (
     Bot,
     BotCommand,
@@ -66,6 +71,7 @@ from configs.settings import (
     CORS_SETTINGS,
     DEVELOPER_GITHUB_REPOSITORY_NAME,
     DEVELOPER_GITHUB_USERNAME,
+    DIFFERENCES_FILE_NAME,
     FASTAPI_PORT,
     GIT_COMMIT,
     GITHUB_CHECKER_FILENAME,
@@ -92,10 +98,6 @@ from handlers.anonymous_handler import (
     handle_read_callback,
 )
 from utils.db_utils import AdminManager, DatabaseManager, Encryptor
-from utils.github_checker import (
-    DIFFERENCES_FILE_NAME,
-    GitHubChecker,
-)
 from utils.helpers import check_language_availability, extract_bot_token, shorten_token
 from utils.log_utils import patch_uvicorn_logging, setup_logging
 from utils.responses import CommandKey, ResponseKey, get_commands, get_response
@@ -205,6 +207,10 @@ def _telegram_builder(token: str) -> ApplicationBuilder:
         Application.builder()
         .token(token)
         .concurrent_updates(10)
+        # No handler schedules jobs. PTB otherwise builds (and starts) an
+        # APScheduler JobQueue per bot, which is pure idle overhead when the
+        # in-memory cache holds many child bots.
+        .job_queue(None)
         .connection_pool_size(TELEGRAM_POOL_SIZE)
         .pool_timeout(TELEGRAM_REQUEST_TIMEOUT)
         .connect_timeout(TELEGRAM_CONNECTION_TIMEOUT)
@@ -393,6 +399,12 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.info(f"safetycheck: No effective user ({user}), returning")
         return
     user_lang = check_language_availability(user.language_code or 'en')
+
+    # Cold path: only /safetycheck needs aiohttp/difflib. Importing it at
+    # module load added ~80 ms of startup and several MB of idle RSS for a
+    # command that is rarely used. This is the same deferral PEP 810's
+    # ``lazy import`` provides, but works on the supported Python 3.10+.
+    from utils.github_checker import GitHubChecker
 
     checker = GitHubChecker(
         repo_owner=DEVELOPER_GITHUB_USERNAME,
@@ -763,8 +775,8 @@ async def handle_retry_register(update: Update, context: ContextTypes.DEFAULT_TY
     await _register_bot_logic(token, user, message, user_lang)
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """FastAPI lifespan: load secrets, DB and the main bot on startup; clean up on shutdown."""
+async def lifespan(app: Starlette) -> AsyncIterator[None]:
+    """ASGI lifespan: load secrets, DB and the main bot on startup; clean up on shutdown."""
     global RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME, MAIN_BOT_USERNAME, db_manager, encryptor, admin_manager, main_bot_application
 
     main_app: Application | None = None
@@ -793,12 +805,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.exception(f"GitHub checker data file read error:\n{e!s}")
             GITHUB_CHECKER_DATA = None
 
-    db_manager = DatabaseManager()
+    # Set the encryption key before the database starts so the one-time
+    # deterministic-column migration can decrypt legacy rows. Awaiting the
+    # init task also guarantees the schema is ready before the first update.
     encryption_key = get_encryption_key()
     if encryption_key is None:
         print("❌ Encryption setup failed. Exiting with error code to trigger restart.")
         sys.exit(1)  # Exit with error code so Docker restarts the container
     encryptor = Encryptor(encryption_key)
+    db_manager = DatabaseManager()
+    await db_manager._init_task
     admin_manager = AdminManager(db_manager, encryptor)
 
     # Ensure MAIN_BOT_TOKEN is not None
@@ -866,10 +882,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await db_manager.close_all()
         logger.warning('Cleanup completed.')
 
-logger.warning("Starting FastAPI app...")
-app = FastAPI(lifespan=lifespan)
-logger.warning("FastAPI initialized.")
-
 #: Public IP address types returned by :func:`_parse_ip`; both expose
 #: ``is_loopback`` (the private ``ipaddress._BaseAddress`` alias does not).
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
@@ -907,8 +919,8 @@ def _update_is_private_chat(update_data: dict) -> bool:
 
     return False
 
-@app.post('/webhook/{bot_token}')
-async def webhook_handler(bot_token: str, request: Request) -> dict[str, str]:
+async def webhook_handler(request: Request) -> JSONResponse:
+    bot_token = request.path_params["bot_token"]
     short_token = shorten_token(bot_token)
 
     # 1) Authenticate the caller before parsing the body (cheapest check).
@@ -956,11 +968,11 @@ async def webhook_handler(bot_token: str, request: Request) -> dict[str, str]:
     update_id = update_data.get("update_id")
     if not _update_is_private_chat(update_data):
         logger.info(f"Ignoring non-private update for {short_token}: update_id={update_id}")
-        return {"status": "ok", "message": "ignored non-private update"}
+        return JSONResponse({"status": "ok", "message": "ignored non-private update"})
     if update_id:
         update_key = f"{short_token}:{update_id}"
         if update_key in PROCESSED_UPDATES:
-            return {"status": "ok", "message": "duplicate"}
+            return JSONResponse({"status": "ok", "message": "duplicate"})
         PROCESSED_UPDATES[update_key] = True
 
     # Get the right Application: the main bot has its own command set
@@ -971,7 +983,7 @@ async def webhook_handler(bot_token: str, request: Request) -> dict[str, str]:
             logger.error(f"Main bot application is not ready; rejecting update for {short_token}")
             if update_id:
                 PROCESSED_UPDATES.pop(f"{short_token}:{update_id}", None)
-            return {"status": "error", "message": "Main bot not ready"}
+            return JSONResponse({"status": "error", "message": "Main bot not ready"})
         application = main_bot_application
     else:
         try:
@@ -980,7 +992,7 @@ async def webhook_handler(bot_token: str, request: Request) -> dict[str, str]:
             logger.error(f"Bot creation failed for {short_token}: {type(e).__name__}")
             if update_id:
                 PROCESSED_UPDATES.pop(f"{short_token}:{update_id}", None)
-            return {"status": "error", "message": "Bot creation failed"}
+            return JSONResponse({"status": "error", "message": "Bot creation failed"})
 
     # Queue update for processing
     update_obj = Update.de_json(update_data, application.bot)
@@ -990,28 +1002,43 @@ async def webhook_handler(bot_token: str, request: Request) -> dict[str, str]:
         logger.warning(f"Queue full for bot {short_token}")
         if update_id:
             PROCESSED_UPDATES.pop(f"{short_token}:{update_id}", None)
-        return {"status": "error", "message": "Queue overloaded"}
+        return JSONResponse({"status": "error", "message": "Queue overloaded"})
 
-    return {"status": "ok"}
+    return JSONResponse({"status": "ok"})
 
 def _main_bot_is_running() -> bool:
     return bool(main_bot_application and getattr(main_bot_application, "running", False))
 
-@app.get('/')
-@app.get('/health')
-@app.head('/')
-@app.head('/health')
-async def health_check() -> dict[str, str]:
+async def health_check(request: Request) -> JSONResponse:
     """Health check endpoint for Docker healthcheck and monitoring."""
     if not getattr(app.state, "main_bot_ready", False) or not _main_bot_is_running():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="main bot is not running",
         )
-    return {"status": "healthy", "service": "hidego-tgbot"}
+    return JSONResponse({"status": "healthy", "service": "hidego-tgbot"})
 
+async def _http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Keep the previous JSON error shape (``{"detail": ...}``)."""
+    return JSONResponse(
+        {"detail": getattr(exc, "detail", "Internal Server Error")},
+        status_code=getattr(exc, "status_code", 500),
+        headers=getattr(exc, "headers", None),
+    )
+
+logger.warning("Starting ASGI app...")
+app = Starlette(
+    routes=[
+        Route('/webhook/{bot_token}', webhook_handler, methods=['POST']),
+        # Starlette adds HEAD automatically for GET routes.
+        Route('/', health_check, methods=['GET']),
+        Route('/health', health_check, methods=['GET']),
+    ],
+    lifespan=lifespan,
+)
+app.add_exception_handler(HTTPException, _http_exception_handler)
 app.add_middleware(CORSMiddleware, **CORS_SETTINGS)
-logger.warning("Middleware added.")
+logger.warning("ASGI app initialized.")
 
 if __name__ == '__main__':
     logger.warning("Starting Uvicorn server...")

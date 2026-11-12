@@ -109,6 +109,18 @@ class WebhookLogFilter(logging.Filter):
             if isinstance(path, str) and path.split('?')[0] == '/health' and status_code == '200':
                 return False
 
+            # Successful webhook deliveries are the highest-volume log source:
+            # one formatted line + stdout/json-file write per update (thousands
+            # per second under load). The bot logs its own security-relevant
+            # events; keep 4xx/5xx access lines so failures stay visible.
+            if (
+                method == 'POST'
+                and isinstance(path, str)
+                and path.startswith('/webhook/')
+                and status_code == '200'
+            ):
+                return False
+
             # Sanitize webhook tokens in path
             if isinstance(path, str) and path.startswith("/webhook/"):
                 args_list[2] = f"/webhook/{shorten_token(path.split('/')[2])}"
@@ -123,7 +135,7 @@ def patch_uvicorn_logging() -> None:
     """Patch Uvicorn loggers with our security filter and timezone-aware formatting.
 
     Finds the Uvicorn access logger and adds our security filter to it.
-    Also configures timezone-aware formatting for FastAPI console output.
+    Also configures timezone-aware formatting for the ASGI/uvicorn console output.
     """
     # Set timezone converter for all loggers
     logging_tz = ZoneInfo(LOGGER_TIMEZONE)

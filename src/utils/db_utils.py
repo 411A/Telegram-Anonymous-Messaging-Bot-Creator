@@ -8,6 +8,7 @@ impossible without the in-message hash fragment.
 """
 import asyncio
 import base64
+import hashlib
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -17,6 +18,7 @@ from typing import Literal, Optional
 
 import aiosqlite
 from cachebox import LRUCache, cached
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -36,6 +38,31 @@ _PREFIX_COLUMN_BY_TABLE: dict[HashTableName, tuple[str, str | None]] = {
 #: PBKDF2 work factor. Unchanged on purpose: existing rows keep their format
 #: and the offline-cracking cost stays exactly the same.
 _PBKDF2_ITERATIONS = 100_000
+
+#: Public domain-separation salt for non-deterministic encryption.
+#:
+#: A fresh random salt per message used to force a full PBKDF2 derivation
+#: (100k iterations, ~20 ms of CPU) for *every* anonymous message, because the
+#: salt was part of the KDF cache key. The salt is stored next to the
+#: ciphertext, so it never added secrecy; its only job was uniqueness. The key
+#: is now derived from this fixed, cacheable salt, while the stored random salt
+#: still randomizes the ciphertext prefix (which is also the database key and
+#: the first part of the Telegram callback) and the random 96-bit nonce makes
+#: every ciphertext unique. It is deliberately different from the deterministic
+#: salt, so the two key/nonce spaces can never collide.
+_NONDETERMINISTIC_SALT = hashlib.sha256(b"hidego/nondeterministic/v1").digest()
+
+#: Public, fixed salt and nonce for deterministic encryption.
+#:
+#: The legacy scheme used the master password itself as both salt and nonce and
+#: stored them in every ciphertext, so anyone with the database could recover
+#: the password (and decrypt everything). Deterministic lookups only need a
+#: stable key, never a secret salt. These are public domain-separation values;
+#: deriving the key still requires the master password via PBKDF2.
+_DETERMINISTIC_SALT = hashlib.sha256(b"hidego/deterministic/salt/v1").digest()
+_DETERMINISTIC_NONCE = hashlib.sha256(
+    b"hidego/deterministic/nonce/v1"
+).digest()[:12]
 
 
 @lru_cache(maxsize=1024)
@@ -110,6 +137,10 @@ class DatabaseManager:
             # 256MB memory map
             await conn.execute("PRAGMA mmap_size = 268435456")
             await conn.execute("PRAGMA foreign_keys = ON")
+            # Overwrite deleted cell content instead of leaving it in free
+            # pages. Deletes are rare (revoke/block/read), so the cost is tiny
+            # and old ciphertext cannot linger on disk.
+            await conn.execute("PRAGMA secure_delete = ON")
             # Handle contention when the database is locked (5 second timeout)
             await conn.execute("PRAGMA busy_timeout = 5000")
             self._pool[self.db_path] = conn
@@ -166,7 +197,127 @@ class DatabaseManager:
                 "idx_composite_blocks",
             ):
                 await conn.execute(f"DROP INDEX IF EXISTS {redundant_index}")
+            # One-time, idempotent: move deterministic rows off the legacy
+            # password-as-salt format before any bot can query them.
+            migrated = await self._migrate_deterministic_columns(conn)
             await conn.commit()
+            if migrated:
+                # Updating a row does not necessarily erase the old bytes:
+                # they can survive in free pages and the WAL. Rewrite the DB
+                # and truncate the WAL so no legacy password-bearing
+                # ciphertext remains on disk.
+                logger.info(
+                    "Deterministic rows migrated; compacting database to "
+                    "purge legacy ciphertext"
+                )
+                try:
+                    async with conn.execute(
+                        "PRAGMA wal_checkpoint(TRUNCATE)"
+                    ) as cursor:
+                        await cursor.fetchall()
+                    await conn.execute("VACUUM")
+                    async with conn.execute(
+                        "PRAGMA wal_checkpoint(TRUNCATE)"
+                    ) as cursor:
+                        await cursor.fetchall()
+                except Exception:
+                    logger.exception(
+                        "Post-migration VACUUM failed; run VACUUM manually "
+                        "to purge legacy pages"
+                    )
+
+    async def _migrate_deterministic_columns(
+        self, conn: aiosqlite.Connection
+    ) -> bool:
+        """Re-encrypt deterministic columns with the public salt/nonce.
+
+        Older rows used the master password itself as salt and nonce, and
+        stored both next to the ciphertext. Re-encrypting with the new public
+        values removes that leak. The operation is idempotent: a row already
+        in the new format decrypts and re-encrypts to the same bytes.
+
+        Returns:
+            True when at least one row was rewritten, False otherwise.
+        """
+        if self.encryptor.master_password is None:
+            logger.warning(
+                "Skipping deterministic-column migration: master password not set"
+            )
+            return False
+
+        changed = False
+
+        def reencrypt(value: str | None) -> str | None:
+            if value is None:
+                return None
+            return self.encryptor.encrypt(
+                self.encryptor.decrypt(value), deterministic=True
+            )
+
+        async with conn.execute(
+            "SELECT bot_token, bot_username, admin_id FROM admins"
+        ) as cursor:
+            admin_rows = await cursor.fetchall()
+        for old_token, old_username, old_admin in admin_rows:
+            try:
+                new_token = reencrypt(old_token)
+                new_username = reencrypt(old_username)
+                new_admin = reencrypt(old_admin)
+                if (new_token, new_username, new_admin) != (
+                    old_token,
+                    old_username,
+                    old_admin,
+                ):
+                    await conn.execute(
+                        "UPDATE admins SET bot_token=?, bot_username=?, admin_id=?"
+                        " WHERE bot_token=?",
+                        (new_token, new_username, new_admin, old_token),
+                    )
+                    changed = True
+            except aiosqlite.IntegrityError:
+                # A migrated copy already exists for this plaintext; drop the
+                # legacy duplicate so the password-bearing row cannot remain.
+                logger.warning("Removing a duplicate legacy admin row")
+                await conn.execute(
+                    "DELETE FROM admins WHERE bot_token=?", (old_token,)
+                )
+                changed = True
+            except Exception:
+                logger.exception(
+                    "Failed to migrate an admin row; leaving it unchanged"
+                )
+
+        async with conn.execute(
+            "SELECT blocked_user_id, bot_username FROM blocks"
+        ) as cursor:
+            block_rows = await cursor.fetchall()
+        for old_blocked_id, old_bot_username in block_rows:
+            try:
+                new_blocked_id = reencrypt(old_blocked_id)
+                new_bot_username = reencrypt(old_bot_username)
+                if (new_blocked_id, new_bot_username) != (
+                    old_blocked_id,
+                    old_bot_username,
+                ):
+                    await conn.execute(
+                        "UPDATE blocks SET blocked_user_id=?, bot_username=?"
+                        " WHERE blocked_user_id=?",
+                        (new_blocked_id, new_bot_username, old_blocked_id),
+                    )
+                    changed = True
+            except aiosqlite.IntegrityError:
+                logger.warning("Removing a duplicate legacy block row")
+                await conn.execute(
+                    "DELETE FROM blocks WHERE blocked_user_id=?",
+                    (old_blocked_id,),
+                )
+                changed = True
+            except Exception:
+                logger.exception(
+                    "Failed to migrate a block row; leaving it unchanged"
+                )
+
+        return changed
 
     async def get_full_hash_by_prefix(self, prefix: str, suffix: str, table_name: HashTableName) -> str | None:
         """Retrieve and reconstruct the full hash using prefix and suffix.
@@ -399,26 +550,32 @@ class Encryptor:
 
         Args:
             data: Plaintext to encrypt.
-            deterministic: When True, derive salt/nonce from the master
-                password so equal inputs produce equal ciphertexts (needed
-                for encrypted lookups). Use only for low-entropy identifiers.
+            deterministic: When True, use the public fixed salt/nonce so equal
+                inputs produce equal ciphertexts (needed for encrypted
+                lookups). Use only for low-entropy identifiers.
+                When False, reuse the cached key with a random 96-bit nonce,
+                so every ciphertext is unique without repeated KDF work.
         """
         if self.master_password is None:
             logger.error("encrypt: Master password not set, cannot encrypt data")
             raise ValueError("Master password must be set before encryption")
 
         if deterministic:
-            # Use master password as salt for deterministic encryption
-            salt = self.master_password.encode()[:32].ljust(32, b'0')
+            # Public fixed salt + nonce keep lookups stable without ever
+            # storing (or deriving from) the master password as key material.
+            salt = _DETERMINISTIC_SALT
+            nonce = _DETERMINISTIC_NONCE
+            key = self._derive_key(salt)
         else:
-            salt = os.urandom(32)  # Generate a unique salt for this encryption
-        key = self._derive_key(salt)
-        chacha = ChaCha20Poly1305(key)
-        if deterministic:
-            # Use a fixed nonce derived from master password for deterministic encryption
-            nonce = self.master_password.encode()[:12].ljust(12, b'0')
-        else:
+            # Random salt keeps the stored ciphertext prefix unique (it is
+            # the database key and the start of the Telegram callback). The
+            # key itself comes from the cached domain-separated salt, so a
+            # send never pays PBKDF2; the random nonce keeps ciphertexts
+            # unique even for identical plaintext.
+            salt = os.urandom(32)
             nonce = os.urandom(12)
+            key = self._derive_key(_NONDETERMINISTIC_SALT)
+        chacha = ChaCha20Poly1305(key)
         ciphertext = chacha.encrypt(nonce, data.encode(), None)
         # Combine salt + nonce + ciphertext for storage
         combined = salt + nonce + ciphertext
@@ -426,6 +583,11 @@ class Encryptor:
 
     def decrypt(self, encrypted_data: str) -> str:
         """Decrypt a value produced by :meth:`encrypt`.
+
+        New non-deterministic blobs use the cached fixed key. Rows written by
+        older versions used the random salt (non-deterministic) or the master
+        password (deterministic) as the KDF salt, so they fall back to that
+        derivation (once per old salt) and keep working unchanged.
 
         Raises:
             ValueError: If the data cannot be decrypted.
@@ -435,10 +597,40 @@ class Encryptor:
             salt = data[:32]
             nonce = data[32:44]
             ciphertext = data[44:]
-            key = self._derive_key(salt)
-            chacha = ChaCha20Poly1305(key)
-            plaintext = chacha.decrypt(nonce, ciphertext, None)
-            return plaintext.decode('utf-8')
+
+            # The legacy deterministic format used the password itself as the
+            # salt; keep that derivation readable for rows not yet migrated.
+            legacy_deterministic_salt = (
+                self.master_password.encode()[:32].ljust(32, b'0')
+                if self.master_password is not None else b''
+            )
+            candidate_keys: tuple[bytes, ...]
+            if salt == _DETERMINISTIC_SALT:
+                candidate_keys = (
+                    self._derive_key(_DETERMINISTIC_SALT),
+                    self._derive_key(_NONDETERMINISTIC_SALT),
+                )
+            elif salt == legacy_deterministic_salt:
+                candidate_keys = (
+                    self._derive_key(legacy_deterministic_salt),
+                    self._derive_key(_NONDETERMINISTIC_SALT),
+                )
+            else:
+                candidate_keys = (self._derive_key(_NONDETERMINISTIC_SALT),)
+
+            for key in candidate_keys:
+                try:
+                    return ChaCha20Poly1305(key).decrypt(
+                        nonce, ciphertext, None
+                    ).decode('utf-8')
+                except InvalidTag:
+                    continue
+
+            # Legacy non-deterministic row: the stored random salt was the
+            # actual KDF salt. This is only reached for pre-upgrade data.
+            return ChaCha20Poly1305(
+                self._derive_key(salt)
+            ).decrypt(nonce, ciphertext, None).decode('utf-8')
         except Exception as e:
             raise ValueError(f'Decryption failed: {e!s}') from e
 

@@ -16,9 +16,6 @@ from pathlib import Path
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-# Infisical SDK (Correct import for 'infisical-sdk')
-from infisical_sdk import InfisicalSDKClient
-
 from configs.settings import (
     INFISICAL_MAX_RETRIES,
     INFISICAL_RETRY_DELAY,
@@ -79,11 +76,19 @@ def get_infisical_secret() -> str | None:
     project_id = os.getenv("INFISICAL_PROJECT_ID")
     env_slug = os.getenv("INFISICAL_ENVIRONMENT", "prod")
 
-    # If variables aren't set, skip straight to manual fallback
+    # If variables aren't set, skip straight to manual fallback. This also
+    # keeps the SDK (and its HTTP stack) out of memory for deployments that
+    # use the local password fallback: the import happens only when Infisical
+    # is actually configured.
     if not (client_id and client_secret and project_id):
         return None
 
     try:
+        # Imported lazily so manual-password deployments never load the SDK
+        # (and its HTTP stack). Kept inside the try block so a broken install
+        # still falls back to the local password path.
+        from infisical_sdk import InfisicalSDKClient
+
         # Initialize Client
         client = InfisicalSDKClient(host="https://app.infisical.com")
 

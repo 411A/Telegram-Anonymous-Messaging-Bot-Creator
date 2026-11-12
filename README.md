@@ -132,7 +132,7 @@ cp .env.example .env
 | `MAIN_BOT_TOKEN` | Telegram Bot API token from @BotFather | `123456:ABC-DEF...` |
 | `WEBHOOK_BASE_URL` | Public HTTPS URL for webhooks | `https://bot.yourdomain.com` |
 | `TG_SECRET_TOKEN` | Secret token for webhook security | `random-secure-string` |
-| `FASTAPI_PORT` | Port for the FastAPI server | `13360` (default) |
+| `FASTAPI_PORT` | Port for the ASGI server (name kept for compatibility) | `13360` (default) |
 | `FASTAPI_BIND_ADDR` | Host bind address for the bot port | `127.0.0.1` (loopback only) |
 | `TRUSTED_PROXY_CIDRS` | Proxies allowed to forward the client IP | `172.30.0.1/32,172.30.0.2/32` |
 | `LOG_FILENAME` | Log file name | `Logs.log` |

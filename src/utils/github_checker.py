@@ -57,7 +57,10 @@ class GitHubChecker:
                 ".env.example", ".gitignore", "LICENSE", "README.md",
                 "docker_entrypoint.sh", "requirements.txt"
             ])
-            default_ignore_folders.extend(["docker"])
+            # `.dockerignore` deliberately keeps src/assets out of the image
+            # (the 33MB tutorial video is served from Telegram/URL), so the
+            # checker must not treat it as a missing source file.
+            default_ignore_folders.extend(["docker", "src/assets"])
 
             # Runtime files that exist in container but not in repo
             default_ignore_files.extend([

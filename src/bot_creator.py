@@ -11,10 +11,13 @@ if platform.system() != 'Windows':
         pass  # Fall back to default event loop
 
 import gc
+import hashlib
 import hmac
 import io
 import ipaddress
+import json
 import logging
+import os
 import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -47,7 +50,7 @@ from telegram import (
     WebhookInfo,
 )
 from telegram.constants import ParseMode
-from telegram.error import InvalidToken, NetworkError, TimedOut
+from telegram.error import BadRequest, InvalidToken, NetworkError, TimedOut
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -117,6 +120,14 @@ GITHUB_CHECK_HASH: int | None = None  # Hash of local files to detect changes
 RUNNING_SCRIPT_DATA: bytes | None = None
 GITHUB_CHECKER_DATA: bytes | None = None
 RUNNING_SCRIPT_SINCE: str | None = None
+
+#: Telegram file-id cache for /safetycheck documents. The diff/ volume is
+#: mounted and survives container recreation, so restarts do not re-upload the
+#: same two source files. Bounded to keep the JSON small across many bots.
+SAFETYCHECK_FILEIDS_PATH = (
+    DIFFERENCES_FILE_NAME.parent / "safetycheck-fileids.json"
+)
+SAFETYCHECK_FILEID_CACHE_LIMIT = 100
 
 # Update deduplication cache: stores update_id for 60 seconds to prevent duplicate processing
 # This prevents webhook retry loops when Telegram resends the same update
@@ -392,6 +403,56 @@ async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message, user_lang = ctx.message, ctx.user_lang
     await message.reply_text(get_response(ResponseKey.PRIVACY_COMMAND, user_lang), parse_mode=ParseMode.HTML, disable_web_page_preview=True, do_quote=True)
 
+def _safetycheck_document_key(
+    bot_id: int, filename: str, data: bytes
+) -> str:
+    """Key a cached Telegram file id by bot, filename and exact content."""
+    return f"{bot_id}:{filename}:{hashlib.sha256(data).hexdigest()}"
+
+
+async def _load_safetycheck_file_ids() -> dict[str, str]:
+    """Load the persistent Telegram file-id cache, tolerating corruption."""
+    try:
+        async with aiofiles.open(
+            SAFETYCHECK_FILEIDS_PATH, encoding="utf-8"
+        ) as cache_file:
+            payload = json.loads(await cache_file.read())
+        if isinstance(payload, dict):
+            return {
+                str(key): value
+                for key, value in payload.items()
+                if isinstance(value, str)
+            }
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        logger.warning("Could not read the safety-check document cache")
+    return {}
+
+
+async def _save_safetycheck_file_ids(file_ids: dict[str, str]) -> None:
+    """Persist file ids atomically; a cache write failure is non-fatal."""
+    try:
+        SAFETYCHECK_FILEIDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if len(file_ids) > SAFETYCHECK_FILEID_CACHE_LIMIT:
+            file_ids = dict(
+                list(file_ids.items())[-SAFETYCHECK_FILEID_CACHE_LIMIT:]
+            )
+        tmp_path = SAFETYCHECK_FILEIDS_PATH.with_name(
+            f".{SAFETYCHECK_FILEIDS_PATH.name}.{os.getpid()}."
+            f"{time.time_ns()}.tmp"
+        )
+        async with aiofiles.open(tmp_path, "w", encoding="utf-8") as cache_file:
+            await cache_file.write(
+                json.dumps(
+                    file_ids, ensure_ascii=False, separators=(",", ":")
+                )
+            )
+        os.replace(tmp_path, SAFETYCHECK_FILEIDS_PATH)
+    except Exception:
+        logger.warning("Could not save the safety-check document cache")
+
+
 async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global GITHUB_CHECK_RESULTS, GITHUB_CHECK_HASH, RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA, GITHUB_CHECKER_DATA, GITHUB_CHECKER_FILENAME
     user = update.effective_user
@@ -424,23 +485,27 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             GITHUB_CHECK_HASH = current_hash
             GITHUB_CHECK_RESULTS.clear()
 
-        if user_lang not in GITHUB_CHECK_RESULTS:
+        if user_lang in GITHUB_CHECK_RESULTS:
+            current_results = GITHUB_CHECK_RESULTS[user_lang]
+        else:
             await checker.write_line_differences()
-            GITHUB_CHECK_RESULTS[user_lang] = await checker.check_integrity(user_lang=user_lang)
-            if not GITHUB_CHECK_RESULTS[user_lang]:
+            current_results = await checker.check_integrity(user_lang=user_lang)
+            if not current_results:
                 logger.warning("GitHub checker returned empty results")
-                GITHUB_CHECK_RESULTS[user_lang] = ["⚠️ No security issues detected"]
+                current_results = ["⚠️ No security issues detected"]
+            # Never cache a failed/partial check: the next command retries.
+            if checker.last_check_ok:
+                GITHUB_CHECK_RESULTS[user_lang] = current_results
     except Exception as e:
         logger.exception(f"GitHub check failed: {e!s}")
-        GITHUB_CHECK_RESULTS[user_lang] = ["⚠️ Safety check unavailable"]
+        current_results = ["⚠️ Safety check unavailable"]
 
     try:
         # Verify global variables are initialized
-        if not all([GITHUB_CHECK_RESULTS, RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA]):
+        if not all([RUNNING_SCRIPT_SINCE, RUNNING_SCRIPT_DATA]):
             raise ValueError("Safety check data not initialized")
 
-        # Get results for current language
-        current_results = GITHUB_CHECK_RESULTS[user_lang]
+        # current_results was resolved above (cached or fresh, success or error).
 
         # Prepare the caption message with an emoji and HTML formatting
         try:
@@ -462,53 +527,116 @@ async def safetycheck(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             logger.error(f"Error getting script filename:\n{e}")
             running_script_filename = "bot_creator.py"
 
-        # Create a new BytesIO instance from the cached file content
+        # Prepare base documents: (cache key, raw bytes, original filename).
         try:
             if RUNNING_SCRIPT_DATA is None:
                 raise ValueError("Running script data not loaded")
-            main_file_to_send = io.BytesIO(RUNNING_SCRIPT_DATA)
-            main_file_to_send.name = running_script_filename
+            base_docs: list[tuple[str, bytes, str]] = [
+                (
+                    _safetycheck_document_key(
+                        context.bot.id,
+                        running_script_filename,
+                        RUNNING_SCRIPT_DATA,
+                    ),
+                    RUNNING_SCRIPT_DATA,
+                    running_script_filename,
+                )
+            ]
         except Exception as e:
             logger.error(f"Error preparing file data:\n{e}")
             raise ValueError("Failed to prepare script file data") from e
 
-        # Create a media group (album) to send both files in one message
-        media_group = [
-            InputMediaDocument(media=main_file_to_send, filename=running_script_filename),
-        ]
+        if GITHUB_CHECKER_DATA:
+            checker_filename = str(GITHUB_CHECKER_FILENAME.name)
+            base_docs.append(
+                (
+                    _safetycheck_document_key(
+                        context.bot.id,
+                        checker_filename,
+                        GITHUB_CHECKER_DATA,
+                    ),
+                    GITHUB_CHECKER_DATA,
+                    checker_filename,
+                )
+            )
 
-        # Add GitHub checker data file if available
-        try:
-            if GITHUB_CHECKER_DATA:
-                github_checker_file = io.BytesIO(GITHUB_CHECKER_DATA)
-                github_checker_file.name = str(GITHUB_CHECKER_FILENAME.name)
-                media_group.append(InputMediaDocument(media=github_checker_file, filename=str(GITHUB_CHECKER_FILENAME.name)))
-        except Exception as e:
-            logger.error(f"Error preparing GitHub checker data file:\n{e}")
-            logger.warning("Continuing without GitHub checker data file")
-
-        # Only add differences file if there are actual differences
+        # Only read the diff file if it exists; it is never cached because it
+        # changes whenever the source differs.
+        diff_bytes: bytes | None = None
         try:
             diff_file_path = DIFFERENCES_FILE_NAME
             if diff_file_path.exists() and diff_file_path.stat().st_size > 0:
                 async with aiofiles.open(diff_file_path, "rb") as diff_file:
-                    diff_file_data = io.BytesIO(await diff_file.read())
-                    diff_file_data.name = str(DIFFERENCES_FILE_NAME.name)
-                media_group.append(InputMediaDocument(media=diff_file_data, filename=str(DIFFERENCES_FILE_NAME.name)))
+                    diff_bytes = await diff_file.read()
         except Exception as e:
             logger.error(f"Error reading diff file:\n{e}")
-            # Continue without differences file rather than failing completely
             logger.warning("Continuing without differences file")
 
-        # Send media group (both documents together)
+        file_ids = await _load_safetycheck_file_ids()
+
+        def build_media_group(
+            use_cached_file_ids: bool,
+        ) -> list[InputMediaDocument]:
+            group: list[InputMediaDocument] = []
+            for key, data, filename in base_docs:
+                cached_id = file_ids.get(key) if use_cached_file_ids else None
+                if cached_id:
+                    # Telegram reuses the already-uploaded document without
+                    # transferring its bytes again.
+                    group.append(InputMediaDocument(media=cached_id))
+                else:
+                    upload = io.BytesIO(data)
+                    upload.name = filename
+                    group.append(
+                        InputMediaDocument(media=upload, filename=filename)
+                    )
+            if diff_bytes is not None:
+                diff_upload = io.BytesIO(diff_bytes)
+                diff_upload.name = str(DIFFERENCES_FILE_NAME.name)
+                group.append(
+                    InputMediaDocument(
+                        media=diff_upload,
+                        filename=str(DIFFERENCES_FILE_NAME.name),
+                    )
+                )
+            return group
+
+        # Send media group (documents together)
         try:
             message = update.effective_message
             if not message:
                 raise ValueError("No message to reply to")
-            media_msgs = await message.reply_media_group(
-                media=media_group,
-                do_quote=True
-            )
+            try:
+                media_msgs = await message.reply_media_group(
+                    media=build_media_group(use_cached_file_ids=True),
+                    do_quote=True,
+                )
+            except BadRequest as e:
+                # A cached file id can expire (or belong to another bot).
+                # Drop the base ids and retry once with fresh uploads.
+                logger.warning(
+                    f"Cached safety-check document rejected, uploading fresh:\n{e}"
+                )
+                for key, _, _ in base_docs:
+                    file_ids.pop(key, None)
+                await _save_safetycheck_file_ids(file_ids)
+                media_msgs = await message.reply_media_group(
+                    media=build_media_group(use_cached_file_ids=False),
+                    do_quote=True,
+                )
+
+            # Refresh the persistent file-id cache from the sent documents.
+            updated = False
+            for index, (key, _, _) in enumerate(base_docs):
+                if index >= len(media_msgs):
+                    break
+                document = getattr(media_msgs[index], "document", None)
+                file_id = getattr(document, "file_id", None)
+                if file_id and file_ids.get(key) != file_id:
+                    file_ids[key] = file_id
+                    updated = True
+            if updated:
+                await _save_safetycheck_file_ids(file_ids)
 
             # Send caption separately since Telegram doesn't allow captions on document groups
             await media_msgs[0].reply_text(

@@ -2,9 +2,13 @@
 import asyncio
 import difflib
 import hashlib
+import json
 import os
+import re
+import time
 from collections.abc import Iterable
 from fnmatch import fnmatch
+from pathlib import Path
 from typing import Any
 
 import aiofiles
@@ -28,6 +32,7 @@ class GitHubChecker:
         branch: str = "main",
         ignore_files: Iterable[str] | None = None,
         ignore_folders: Iterable[str] | None = None,
+        cache_path: Path | str | None = None,
     ) -> None:
         self.repo_owner: str = repo_owner
         self.repo_name: str = repo_name
@@ -41,6 +46,18 @@ class GitHubChecker:
         self.github_hashes: dict[str, str] | None = None
         self._check_state: list[str] | None = None
         self._has_run_check: bool = False
+        self.last_check_ok: bool = True
+        self.cache_path: Path = (
+            Path(cache_path)
+            if cache_path is not None
+            else DIFFERENCES_FILE_NAME.parent / "safetycheck-github-cache.json"
+        )
+        # A commit SHA is immutable; a branch name can move, so its cached
+        # tree is only trusted for a short window.
+        self._cache_ttl_seconds: int = 300
+        self._immutable_ref: bool = bool(
+            re.fullmatch(r"[0-9a-f]{7,40}", self.branch)
+        )
         self.repo_owner = repo_owner
         self.repo_name = repo_name
         self.branch = branch
@@ -201,14 +218,84 @@ class GitHubChecker:
         file_hash = await self._get_git_sha1_hash(filepath)
         return rel_path, file_hash
 
+    async def _load_cached_github_hashes(self) -> dict[str, str] | None:
+        """Return a valid on-disk GitHub tree snapshot, if one exists.
+
+        CI images pin an immutable commit, so the remote tree can never change
+        for that image: the snapshot stays valid across restarts. Local builds
+        follow ``main``, so their snapshot is only trusted for a short TTL.
+        """
+        try:
+            if not self.cache_path.exists():
+                return None
+            async with aiofiles.open(self.cache_path, encoding="utf-8") as f:
+                data = json.loads(await f.read())
+            if data.get("repo") != f"{self.repo_owner}/{self.repo_name}":
+                return None
+            if data.get("branch") != self.branch:
+                return None
+            if not self._immutable_ref:
+                cached_at = float(data.get("cached_at", 0))
+                if time.time() - cached_at > self._cache_ttl_seconds:
+                    return None
+            hashes = data.get("hashes")
+            if not isinstance(hashes, dict) or not hashes:
+                return None
+            return {str(path): str(sha) for path, sha in hashes.items()}
+        except Exception:
+            # A corrupt or unreadable cache is never fatal; refetch instead.
+            return None
+
+    async def _save_cached_github_hashes(
+        self, github_hashes: dict[str, str]
+    ) -> None:
+        """Persist the remote tree snapshot for the next process start."""
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "repo": f"{self.repo_owner}/{self.repo_name}",
+                "branch": self.branch,
+                "cached_at": int(time.time()),
+                "hashes": github_hashes,
+            }
+            tmp_path = self.cache_path.with_name(
+                f".{self.cache_path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+            )
+            async with aiofiles.open(tmp_path, "w", encoding="utf-8") as f:
+                await f.write(
+                    json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+            os.replace(tmp_path, self.cache_path)
+        except Exception:
+            # Caching is an optimization; a write failure must not break the
+            # safety check or its reported result.
+            pass
+
     async def _get_github_hashes(self) -> dict[str, str]:
+        """Return GitHub blob hashes, preferring the persistent snapshot."""
+        if self.github_hashes is not None:
+            return self.github_hashes
+
+        cached = await self._load_cached_github_hashes()
+        if cached is not None:
+            self.github_hashes = cached
+            return cached
+
+        github_hashes = await self._fetch_github_hashes()
+        self.github_hashes = github_hashes
+        await self._save_cached_github_hashes(github_hashes)
+        return github_hashes
+
+    async def _fetch_github_hashes(self) -> dict[str, str]:
         """
         Gets all file hashes from GitHub in a single API call.
         This is the core optimization.
         """
-        if self.github_hashes is not None:
-            return self.github_hashes
-
         url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/git/trees/{self.branch}?recursive=1"
         headers = {"Accept": "application/vnd.github.v3+json"}
         github_hashes = {}
@@ -226,8 +313,7 @@ class GitHubChecker:
             if item["type"] == "blob" and not self._is_ignored(item["path"]):
                 github_hashes[item["path"]] = item["sha"]
 
-        self.github_hashes = github_hashes
-        return self.github_hashes
+        return github_hashes
 
     async def check_integrity(self, user_lang: str) -> list[str]:
         """
@@ -283,13 +369,17 @@ class GitHubChecker:
                 )
 
         except aiohttp.ClientError as e:
+            self.last_check_ok = False
             error_msg = f"Network error checking repository: {e}"
             print(error_msg)
             responses.append(error_msg)
         except Exception as e:
+            self.last_check_ok = False
             error_msg = f"An unexpected error occurred: {e}"
             print(error_msg)
             responses.append(error_msg)
+        else:
+            self.last_check_ok = True
 
         self._check_state = responses
         self._has_run_check = True

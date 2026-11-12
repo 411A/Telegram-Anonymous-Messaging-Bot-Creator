@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import time
@@ -321,3 +322,79 @@ def test_docker_safetycheck_ignores_repo_only_files(monkeypatch) -> None:
     assert checker._is_ignored(".github/workflows/docker-publish.yml")
     assert checker._is_ignored("tests/test_core.py")
     assert not checker._is_ignored("src/bot_creator.py")
+
+
+async def test_github_tree_cache_avoids_network(tmp_path, monkeypatch) -> None:
+    commit = "a" * 40
+    checker = GitHubChecker(
+        repo_owner="owner",
+        repo_name="repo",
+        branch=commit,
+        cache_path=tmp_path / "github-cache.json",
+    )
+    hashes = {"src/a.py": "1" * 40}
+    await checker._save_cached_github_hashes(hashes)
+
+    async def fail() -> dict[str, str]:
+        raise AssertionError("network should not be used when the cache is valid")
+
+    monkeypatch.setattr(checker, "_fetch_github_hashes", fail)
+    assert await checker._get_github_hashes() == hashes
+
+
+async def test_github_tree_cache_ttl_for_moving_branch(
+    tmp_path, monkeypatch
+) -> None:
+    checker = GitHubChecker(
+        repo_owner="owner",
+        repo_name="repo",
+        branch="main",
+        cache_path=tmp_path / "github-cache.json",
+    )
+    stale = {"src/a.py": "1" * 40}
+    (tmp_path / "github-cache.json").write_text(
+        json.dumps(
+            {
+                "repo": "owner/repo",
+                "branch": "main",
+                "cached_at": int(time.time()) - 1000,
+                "hashes": stale,
+            }
+        ),
+        encoding="utf-8",
+    )
+    fresh = {"src/b.py": "2" * 40}
+
+    async def fetch() -> dict[str, str]:
+        return fresh
+
+    monkeypatch.setattr(checker, "_fetch_github_hashes", fetch)
+    assert await checker._get_github_hashes() == fresh
+
+    # The fresh result is now cached, so a reload must not hit the network.
+    checker.github_hashes = None
+
+    async def fail() -> dict[str, str]:
+        raise AssertionError("network should not be used after a fresh cache write")
+
+    monkeypatch.setattr(checker, "_fetch_github_hashes", fail)
+    assert await checker._get_github_hashes() == fresh
+
+
+async def test_safetycheck_file_id_cache_roundtrip(tmp_path, monkeypatch) -> None:
+    cache_path = tmp_path / "fileids.json"
+    monkeypatch.setattr(bot_creator, "SAFETYCHECK_FILEIDS_PATH", cache_path)
+
+    await bot_creator._save_safetycheck_file_ids({"key": "file-id"})
+    assert await bot_creator._load_safetycheck_file_ids() == {"key": "file-id"}
+
+    cache_path.write_text("{not valid json", encoding="utf-8")
+    assert await bot_creator._load_safetycheck_file_ids() == {}
+
+
+def test_safetycheck_document_key_includes_content_and_bot() -> None:
+    first = bot_creator._safetycheck_document_key(1, "a.py", b"one")
+    assert first == bot_creator._safetycheck_document_key(1, "a.py", b"one")
+    assert first != bot_creator._safetycheck_document_key(1, "a.py", b"two")
+    assert first != bot_creator._safetycheck_document_key(2, "a.py", b"one")
+    assert first != bot_creator._safetycheck_document_key(1, "b.py", b"one")

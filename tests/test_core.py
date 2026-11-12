@@ -19,6 +19,7 @@ from utils.db_utils import (
     Encryptor,
     _derive_key_cached,
 )
+from utils.github_checker import GitHubChecker
 from utils.helpers import (
     check_language_availability,
     extract_bot_token,
@@ -153,3 +154,16 @@ async def test_main_start_uses_registration_welcome(monkeypatch) -> None:
     text = reply.await_args.args[0]
     assert "/register BOT_TOKEN" in text
     assert "Bot Creation Guide Video" in text
+
+
+def test_docker_safetycheck_ignores_repo_only_files(monkeypatch) -> None:
+    monkeypatch.setenv("DOCKER_ENV", "1")
+    checker = GitHubChecker(
+        repo_owner="411A",
+        repo_name="Telegram-Anonymous-Messaging-Bot-Creator",
+    )
+    assert checker._is_ignored("requirements-dev.txt")
+    assert checker._is_ignored("src/assets/Guide-Telegram-Bot-HidEgoBot.mp4")
+    assert checker._is_ignored(".github/workflows/docker-publish.yml")
+    assert checker._is_ignored("tests/test_core.py")
+    assert not checker._is_ignored("src/bot_creator.py")

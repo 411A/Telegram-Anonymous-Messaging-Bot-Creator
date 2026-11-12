@@ -58,7 +58,8 @@ class GitHubChecker:
             # Files that don't exist in Docker container but exist in repo
             default_ignore_files.extend([
                 ".env.example", ".gitignore", "LICENSE", "README.md",
-                "docker_entrypoint.sh", "requirements.txt"
+                "docker_entrypoint.sh", "requirements.txt",
+                "requirements-dev.txt",
             ])
             # `.dockerignore` deliberately keeps src/assets out of the image
             # (the 33MB tutorial video is served from Telegram/URL), so the

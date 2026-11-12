@@ -1048,6 +1048,14 @@ async def handle_anonymous_callback(update: Update, context: ContextTypes.DEFAUL
         logger.warning("handle_anonymous_callback: No callback data found, returning")
         return
 
+    # Stop Telegram's callback spinner immediately. The rest of this handler
+    # performs database work, encryption and several Bot API calls; on slow
+    # VPS egress that regularly exceeded Telegram's callback answer deadline.
+    try:
+        await query.answer()
+    except Exception as exc:
+        logger.warning(f"Failed to answer anonymous callback query: {exc}")
+
     user_lang = check_language_availability(query.from_user.language_code or 'en')
 
     original_sender_message = query.message.reply_to_message

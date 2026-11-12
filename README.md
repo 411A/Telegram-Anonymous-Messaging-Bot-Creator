@@ -77,9 +77,12 @@ nano .env  # Edit with your bot token and settings
 
 # 3. Start the bot
 cd docker/
-chmod +x run.sh
 ./run.sh start
 ```
+
+> `run.sh` is stored executable in Git. If you copied the project from
+> Windows without preserving file modes, run `chmod +x docker/run.sh` once;
+> normal `git clone` and `git pull` keep the bit.
 
 See [docker/README.md](docker/README.md) for complete Docker documentation, [docker/cloudflared/README.md](docker/cloudflared/README.md) for Cloudflare Tunnel setup, and [docker/MIGRATION.md](docker/MIGRATION.md) for moving an existing deployment to a new VPS.
 

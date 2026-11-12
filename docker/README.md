@@ -64,9 +64,11 @@ nano .env  # or your preferred editor
 ### 3. Start with Helper Script
 ```bash
 cd docker/
-chmod +x run.sh
 ./run.sh start
 ```
+
+`run.sh` is stored executable in Git; if a manual copy dropped the bit,
+`chmod +x run.sh` once.
 
 ### 4. Alternative: Direct Docker Compose
 ```bash

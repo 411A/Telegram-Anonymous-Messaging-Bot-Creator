@@ -171,9 +171,11 @@ recreate it only if you change the hostname.
 
 ```bash
 cd docker
-chmod +x run.sh
 ./run.sh start --lean
 ```
+
+If this is a manual copy rather than a `git clone` and it lost file modes,
+run `chmod +x run.sh` once.
 
 Because `LEAN_MODE=1` is in `.env`, every later `./run.sh recover` — including
 the systemd watchdog — keeps the lean override.

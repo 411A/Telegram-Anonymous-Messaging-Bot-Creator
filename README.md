@@ -476,6 +476,37 @@ curl -i -X POST https://webhook.yourdomain.com/webhook/test
 
 `https://webhook.yourdomain.com/health` now returns `404` by design.
 
+### CPU Monitoring (1 vCPU / burstable plans)
+
+A single `docker stats` snapshot can miss the spikes that trigger provider
+throttling. Record history instead of sampling by eye:
+
+```bash
+# One-off: which container is using CPU right now?
+docker stats --no-stream \
+  --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
+
+# Host-wide total (container plus everything outside Docker)
+top -b -n1 | head -25
+
+# History: sysstat is tiny and records every 10 minutes by default
+sudo apt install -y sysstat
+sudo systemctl enable --now sysstat
+sar -u          # today's host CPU history
+sar -u -f "/var/log/sysstat/sa$(date +%d)"   # a specific day
+
+# Optional per-container history every 5 minutes
+STATS_CMD='*/5 * * * * docker stats --no-stream '
+STATS_CMD+='--format "{{.Name}} {{.CPUPerc}} {{.MemUsage}}" '
+STATS_CMD+='>> /var/log/docker-stats.log'
+(crontab -l 2>/dev/null; echo "$STATS_CMD") | crontab -
+```
+
+On a 1 vCPU plan, `100%` in `docker stats` means one full core, not the
+provider's guaranteed share. If throttling recurs, capture `docker stats` and
+`top -b -n1 | head -25` during the spike, with the timestamp and timezone, and
+identify which container is responsible before changing limits.
+
 ### Common Issues
 
 **Issue**: Bot can't connect to Telegram  

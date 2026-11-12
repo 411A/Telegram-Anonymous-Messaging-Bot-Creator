@@ -65,6 +65,10 @@ COPY main_bot_onetime_settings.py .
 COPY pyproject.toml .
 COPY .dockerignore .
 
+# Pre-compile bytecode at build time. Runtime sets PYTHONDONTWRITEBYTECODE=1,
+# so without this every container start recompiles the whole app from source.
+RUN python -m compileall -q src main_bot_onetime_settings.py
+
 # Startup script
 COPY docker/docker_entrypoint.sh .
 RUN chmod +x docker_entrypoint.sh
@@ -76,7 +80,9 @@ RUN chmod +x docker_entrypoint.sh
 EXPOSE 13360
 
 # Python-based healthcheck: no curl binary needed in the image.
-HEALTHCHECK --interval=60s --timeout=10s --retries=3 --start-period=120s \
+# 300s interval: each probe starts a fresh Python interpreter, so 60s polling
+# burned CPU quota for no practical benefit on a stable, 24/7 bot.
+HEALTHCHECK --interval=300s --timeout=10s --retries=3 --start-period=120s \
     CMD python -c "import os,urllib.request;urllib.request.urlopen('http://localhost:%s/health' % os.environ.get('FASTAPI_PORT','13360'),timeout=8)" || exit 1
 
 ENTRYPOINT ["./docker_entrypoint.sh"]

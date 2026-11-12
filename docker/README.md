@@ -645,11 +645,15 @@ The compose file already includes this healthcheck (Python stdlib probe — the 
 ```yaml
 healthcheck:
   test: ["CMD-SHELL", "python -c \"import os,urllib.request;urllib.request.urlopen('http://localhost:'+os.environ.get('FASTAPI_PORT','13360')+'/health',timeout=8)\" || exit 1"]
-  interval: 60s
+  interval: 300s
   timeout: 10s
   retries: 3
   start_period: 120s
 ```
+
+`interval` is 300s on purpose: every probe starts a separate Python
+interpreter, and 60s polling spent CPU quota on a stable 24/7 bot for no
+practical gain. Failures still surface after the three retries.
 
 ---
 

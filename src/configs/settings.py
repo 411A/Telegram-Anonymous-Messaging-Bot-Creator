@@ -49,8 +49,9 @@ TELEGRAM_CONNECTION_TIMEOUT: Final[int] = int(os.getenv('TELEGRAM_CONNECTION_TIM
 TELEGRAM_READ_TIMEOUT: Final[int] = int(os.getenv('TELEGRAM_READ_TIMEOUT') or 30)
 TELEGRAM_WRITE_TIMEOUT: Final[int] = int(os.getenv('TELEGRAM_WRITE_TIMEOUT') or 30)
 # Max pooled Bot API connections per cached bot Application (upstream default 256;
-# lower on low-end hosts, e.g. 32 via LEAN_MODE, to bound sockets/CPU on 1 vCPU).
-TELEGRAM_POOL_SIZE: Final[int] = int(os.getenv('TELEGRAM_POOL_SIZE') or 256)
+# 64 still covers the 10 concurrent updates and their parallel API calls, while
+# bounding sockets/memory on a 1 vCPU host. LEAN_MODE lowers it to 32.
+TELEGRAM_POOL_SIZE: Final[int] = int(os.getenv('TELEGRAM_POOL_SIZE') or 64)
 # Optional proxy URL for Bot API traffic (https/socks5), e.g. when the VPS
 # provider resets/throttles api.telegram.org. Plain env HTTPS_PROXY also works.
 TELEGRAM_PROXY: Final = os.getenv('TELEGRAM_PROXY') or None

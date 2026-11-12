@@ -10,6 +10,7 @@ if platform.system() != 'Windows':
     except ImportError:
         pass  # Fall back to default event loop
 
+import gc
 import hmac
 import io
 import ipaddress
@@ -802,6 +803,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.main_bot_ready = True
         logger.info('Main bot started successfully')
 
+        # Startup is complete. Move modules, config and long-lived PTB objects
+        # to the permanent GC generation so later cyclic collections do not
+        # keep rescanning them on every update.
+        gc.collect()
+        gc.freeze()
+
         yield
 
     except Exception as e:
@@ -824,7 +831,12 @@ logger.warning("Starting FastAPI app...")
 app = FastAPI(lifespan=lifespan)
 logger.warning("FastAPI initialized.")
 
-def _parse_ip(ip_str: str | None) -> ipaddress._BaseAddress | None:
+#: Public IP address types returned by :func:`_parse_ip`; both expose
+#: ``is_loopback`` (the private ``ipaddress._BaseAddress`` alias does not).
+IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
+
+
+def _parse_ip(ip_str: str | None) -> IPAddress | None:
     """Parse IP address from string, handling IPv6 brackets and port suffixes."""
     if not ip_str:
         return None

@@ -585,7 +585,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         try:
             raw_admin_callback = encryptor.decrypt(full_encrypted_hash)
             # Expecting raw_admin_callback in format: option SEP admin_id SEP sender_user_id SEP original_message_id SEP timestamp
-            option, admin_id_str, sender_user_id_str, original_message_id_str, timestamp = raw_admin_callback.split(SEP)
+            _option, admin_id_str, sender_user_id_str, original_message_id_str, _timestamp = raw_admin_callback.split(SEP)
             # Convert IDs to integers
             admin_id = int(admin_id_str)
             sender_user_id = int(sender_user_id_str)
@@ -673,7 +673,7 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
             logger.warning("handle_admin_block: Invalid callback data type")
             return
 
-        operation, prefix, suffix = raw_admin_callback.split(SEP)
+        _operation, prefix, suffix = raw_admin_callback.split(SEP)
 
         # Get the full hash and decrypt it to get sender_user_id
         db_manager = DatabaseManager()
@@ -686,7 +686,7 @@ async def handle_admin_block(query: CallbackQuery, admin_id: int, context: Conte
             return
 
         decrypted_data = encryptor.decrypt(full_encrypted_hash)
-        option, admin_id_str, sender_user_id_str, original_message_id_str, timestamp = decrypted_data.split(SEP)
+        _option, _admin_id_str, sender_user_id_str, _original_message_id_str, _timestamp = decrypted_data.split(SEP)
 
         # Convert sender_user_id to integer
         sender_user_id = int(sender_user_id_str)

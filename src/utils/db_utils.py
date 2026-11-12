@@ -12,6 +12,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from typing import Literal, Optional
 
 import aiosqlite
@@ -31,6 +32,33 @@ _PREFIX_COLUMN_BY_TABLE: dict[HashTableName, tuple[str, str | None]] = {
     "messages": ("prefixed_msg_hash", "partial_msg_hash"),
     "reads": ("prefixed_hash", "partial_hash"),
 }
+
+#: PBKDF2 work factor. Unchanged on purpose: existing rows keep their format
+#: and the offline-cracking cost stays exactly the same.
+_PBKDF2_ITERATIONS = 100_000
+
+
+@lru_cache(maxsize=1024)
+def _derive_key_cached(password: str, salt: bytes) -> bytes:
+    """Derive (and memoize) the ChaCha20 key for one password/salt pair.
+
+    One PBKDF2-HMAC-SHA256 derivation at 100k iterations costs tens of
+    milliseconds of pure CPU. The application re-derived the *same* key for
+    every deterministic lookup (admin ID, user ID, bot username) and for every
+    callback decrypt, so the KDF dominated CPU usage on a small VPS.
+
+    Caching the 32-byte result changes neither the stored format nor any
+    ciphertext: identical KDF inputs produce identical keys. The password is
+    part of the cache key, so a changed master password can never reuse a
+    stale entry. At most 1024 recent salts are retained (~100 KiB).
+    """
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=_PBKDF2_ITERATIONS,
+    )
+    return kdf.derive(password.encode())
 
 
 def _resolve_prefix_column(table_name: HashTableName) -> tuple[str, str | None]:
@@ -120,17 +148,26 @@ class DatabaseManager:
                     partial_hash TEXT
                 )
             """)
-            # Create optimized indexes for faster queries
+            # Only the indexes a query actually uses. The PRIMARY KEY already
+            # indexes admins.bot_token, messages.prefixed_msg_hash,
+            # blocks.blocked_user_id and reads.prefixed_hash, so the old
+            # duplicate indexes only added a B-tree write to every insert.
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_aid ON admins(admin_id)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_bu_admins ON admins(bot_username)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_bt ON admins(bot_token)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_pemh ON messages(prefixed_msg_hash)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_year_month ON messages(year_month)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_peh ON reads(prefixed_hash)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_uib ON blocks(blocked_user_id)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_bu_blocks ON blocks(bot_username)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_composite_blocks ON blocks(blocked_user_id, bot_username)")
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bu_admins ON admins(bot_username)"
+            )
+            for redundant_index in (
+                "idx_bt",
+                "idx_pemh",
+                "idx_year_month",
+                "idx_peh",
+                "idx_uib",
+                "idx_bu_blocks",
+                "idx_composite_blocks",
+            ):
+                await conn.execute(f"DROP INDEX IF EXISTS {redundant_index}")
             await conn.commit()
+
     async def get_full_hash_by_prefix(self, prefix: str, suffix: str, table_name: HashTableName) -> str | None:
         """Retrieve and reconstruct the full hash using prefix and suffix.
 
@@ -355,13 +392,7 @@ class Encryptor:
         if self.master_password is None:
             logger.error("_derive_key: Master password not set, cannot derive key")
             raise ValueError("Master password must be set before encryption/decryption")
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=salt,
-            iterations=100000,
-        )
-        return kdf.derive(self.master_password.encode())
+        return _derive_key_cached(self.master_password, salt)
 
     def encrypt(self, data: str, deterministic: bool = False) -> str:
         """Encrypt a string, returning base64(salt + nonce + ciphertext).

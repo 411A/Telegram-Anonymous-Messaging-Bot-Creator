@@ -25,7 +25,7 @@ services:
     #* Docker restart policies restart exited containers, not unhealthy ones.
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import os,urllib.request;urllib.request.urlopen('http://localhost:'+os.environ.get('FASTAPI_PORT','13360')+'/health',timeout=8)\" || exit 1"]
-      interval: 60s
+      interval: 300s
       timeout: 10s
       retries: 3
       start_period: 120s
@@ -42,6 +42,14 @@ services:
     #* Environment variables from .env file
     env_file:
       - ../.env
+
+    # Safe defaults for every deployment. uvicorn's uvloop + httptools path
+    # uses less CPU per webhook; a 64-socket pool still exceeds the 10
+    # concurrent updates each bot allows. Operator .env values win, and the
+    # lean override tightens the pool further.
+    environment:
+      UVICORN_EXTRA_ARGS: ${UVICORN_EXTRA_ARGS:---loop uvloop --http httptools}
+      TELEGRAM_POOL_SIZE: ${TELEGRAM_POOL_SIZE:-64}
 
     #* Explicit upstream DNS: the embedded Docker DNS behind a
     #* systemd-resolved stub measured 2s+ per api.telegram.org lookup,
